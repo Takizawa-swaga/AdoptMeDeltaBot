@@ -3,7 +3,9 @@ local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
-local ANIME_IMAGE_ID = "" -- Optional image uploaded to Roblox, e.g. rbxassetid://...
+local ANIME_IMAGE_ID = "rbxassetid://81395037988634"
+-- Sibling subtrees: art < lighting < petals < glass < controls < popups.
+local Z = {background = 1, lighting = 2, petals = 3, glass = 5, decoration = 6, control = 7, header = 8, popup = 50}
 local GUI_NAME = "TakizawaAdoptMeGUI"
 local ITEMS = {
     {id = "ribbon_seal", name = "Ribbon Seal"},
@@ -11,7 +13,7 @@ local ITEMS = {
     {id = "fly_potion", name = "Fly Potion"},
 }
 local C = {
-    bg = Color3.fromRGB(12, 10, 20), glass = Color3.fromRGB(23, 19, 33),
+    bg = Color3.fromRGB(12, 10, 20), glass = Color3.fromRGB(26, 13, 24),
     pink = Color3.fromRGB(255, 111, 187), magenta = Color3.fromRGB(172, 44, 117),
     pale = Color3.fromRGB(255, 202, 230), text = Color3.fromRGB(246, 235, 247),
     muted = Color3.fromRGB(173, 149, 178), line = Color3.fromRGB(91, 62, 91),
@@ -30,6 +32,10 @@ local gui, window, body, header, sidebar, anime, pageHost, uiScale, popupLayer
 local W, H, portrait = 900, 530, false
 local activePage = "home"
 local cameraConnection, dropdownClose, dropdownAnchor, listRefresh
+local backgroundImage, backgroundShade, shadeGradient, petalLayer
+local ambientTweens, activePetals = {}, {}
+local particleThread, petalCount = nil, 0
+local random = Random.new()
 local function connect(signal, callback, scope)
     local c = signal:Connect(callback)
     table.insert(scope or connections, c)
@@ -42,6 +48,7 @@ end
 local function make(class, parent, props)
     local object = Instance.new(class)
     for key, value in pairs(props or {}) do object[key] = value end
+    if object:IsA("GuiObject") and (not props or props.ZIndex == nil) then object.ZIndex = Z.glass end
     object.Parent = parent
     return object
 end
@@ -74,31 +81,41 @@ local function text(parent, value, x, y, width, height, size, color)
     return make("TextLabel", parent, {Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(width, height),
         BackgroundTransparency = 1, Text = value, TextSize = size or 15, TextColor3 = color or C.text,
         Font = Enum.Font.GothamMedium, TextXAlignment = Enum.TextXAlignment.Left,
-        TextTruncate = Enum.TextTruncate.AtEnd, Active = false})
+        TextTruncate = Enum.TextTruncate.AtEnd, Active = false, ZIndex = Z.control})
 end
 local function createButton(parent, value, x, y, width, height, bright, scope)
     local base = bright and C.magenta or C.glass
+    local transparency = bright and 0.15 or 0.24
     local b = make("TextButton", parent, {Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(width, height),
-        BackgroundColor3 = base, BackgroundTransparency = bright and 0 or 0.12, AutoButtonColor = false,
-        Text = value, TextColor3 = bright and C.text or C.pale, TextSize = 15, Font = Enum.Font.GothamMedium})
-    corners(b, 8); stroke(b, bright and C.pink or C.line)
+        BackgroundColor3 = base, BackgroundTransparency = transparency, AutoButtonColor = false,
+        Text = value, TextColor3 = bright and C.text or C.pale, TextSize = 15, Font = Enum.Font.GothamMedium, ZIndex = Z.control})
+    corners(b, 8); stroke(b, C.pink, bright and 0.2 or 0.58)
     if bright then gradient(b, C.pink, C.magenta, 25) end
-    connect(b.MouseEnter, function() animate(b, {BackgroundColor3 = bright and C.pink or Color3.fromRGB(48, 30, 51)}) end, scope)
-    connect(b.MouseLeave, function() animate(b, {BackgroundColor3 = base}) end, scope)
+    local function appearance(hover, pressed)
+        local selected = b:GetAttribute("GlassSelected") == true
+        local opacity = selected and 0.16 or transparency
+        animate(b, {BackgroundColor3 = (bright or selected) and C.magenta or (hover and Color3.fromRGB(43, 20, 37) or base),
+            BackgroundTransparency = opacity - (pressed and 0.08 or hover and 0.04 or 0),
+            TextTransparency = pressed and 0.12 or 0})
+    end
+    connect(b.MouseEnter, function() appearance(true, false) end, scope)
+    connect(b.MouseLeave, function() appearance(false, false) end, scope)
     connect(b.InputBegan, function(input)
         if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            animate(b, {TextTransparency = 0.3})
+            appearance(true, true)
         end
     end, scope)
-    connect(b.InputEnded, function() animate(b, {TextTransparency = 0}) end, scope)
+    connect(b.InputEnded, function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then appearance(false, false) end
+    end, scope)
     return b
 end
 local function createCard(parent, title, x, y, width, height)
-    local card = frame(parent, x, y, width, height, C.glass, 0.15)
-    corners(card); stroke(card)
-    gradient(card, Color3.fromRGB(33, 27, 43), Color3.fromRGB(14, 13, 23), 70)
+    local card = frame(parent, x, y, width, height, C.glass, 0.24)
+    corners(card); stroke(card, C.pink, 0.64)
+    gradient(card, Color3.fromRGB(42, 22, 36), Color3.fromRGB(16, 13, 23), 70)
     text(card, title, 12, 8, width - 24, 22, 13, C.pale)
-    frame(card, 10, 34, width - 20, 1, C.line, 0.4)
+    frame(card, 10, 34, width - 20, 1, C.line, 0.4).ZIndex = Z.decoration
     return card
 end
 local function closeDropdown()
@@ -154,7 +171,7 @@ local function setRunning(running)
     state.generation += 1 -- Future async work must check this cancellation token.
     for _, b in ipairs(startButtons) do
         b.Active = not running
-        animate(b, {TextTransparency = running and 0.5 or 0, BackgroundTransparency = running and 0.22 or 0})
+        animate(b, {TextTransparency = running and 0.5 or 0, BackgroundTransparency = running and 0.22 or 0.15})
     end
     setStatus(running and "Работает" or "Остановлен", running and C.green or C.red)
     addLog("Bot", running and "Started — GUI only" or "Stopped")
@@ -347,7 +364,7 @@ local function createItemsPage()
         end
         table.clear(rowObjects)
         for i, scheme in ipairs(state.schemes) do
-            local row = frame(list, 0, (i - 1) * 46, 470, 40, C.glass)
+            local row = frame(list, 0, (i - 1) * 46, 470, 40, C.glass, 0.26)
             table.insert(rowObjects, row); corners(row); stroke(row, state.selected == i and C.pink or C.line)
             local select = createButton(row, i .. "  " .. scheme.give.name .. " x" .. scheme.giveQuantity .. " → " .. scheme.want.name .. " x" .. scheme.wantQuantity,
                 0, 0, 420, 40, state.selected == i, rowScope)
@@ -416,7 +433,10 @@ local function switchPage(id)
         local selected = name == id
         entry.gradient.Enabled = selected
         entry.stroke.Color = selected and C.pink or C.line
-        animate(entry.button, {BackgroundColor3 = selected and C.magenta or C.glass})
+        entry.stroke.Transparency = selected and 0.18 or 0.58
+        entry.button:SetAttribute("GlassSelected", selected)
+        animate(entry.button, {BackgroundColor3 = selected and C.magenta or C.glass,
+            BackgroundTransparency = selected and 0.16 or 0.24})
     end
     local page = pages[id]
     page.CanvasPosition = Vector2.zero
@@ -424,30 +444,93 @@ local function switchPage(id)
     animate(page, {Position = UDim2.fromOffset(0, 0), ScrollBarImageTransparency = 0.1})
 end
 local function createAnimePanel()
-    anime = frame(body, 0, 0, 366, 438, C.bg, 0.1)
-    anime.ClipsDescendants = true; corners(anime)
-    gradient(anime, Color3.fromRGB(16, 13, 32), Color3.fromRGB(78, 20, 55), 65)
-    for i = 1, 4 do
-        local glow = frame(anime, 150 - i * 14, 80 - i * 18, 180 + i * 28, 250 + i * 25, C.magenta, 0.91)
-        corners(glow, 160); glow.Rotation = -28
-        gradient(glow, C.magenta, C.bg, 90)
+    -- Whole-window 16:9 art. Fit retains the character at the left edge;
+    -- the small breathing overscan cannot crop any meaningful part of it.
+    anime = make("Frame", window, {Name = "AnimeBackground", Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true,
+        Active = false, ZIndex = Z.background})
+    backgroundImage = make("ImageLabel", anime, {Name = "AnimeArt", AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(1.004, 1.004),
+        BackgroundTransparency = 1, Image = ANIME_IMAGE_ID, ImageTransparency = 0,
+        ScaleType = Enum.ScaleType.Fit, Active = false, Selectable = false, ZIndex = Z.background})
+    backgroundShade = make("Frame", window, {Name = "RightShade", Position = UDim2.fromScale(0.33, 0),
+        Size = UDim2.fromScale(0.67, 1), BackgroundColor3 = C.bg, BorderSizePixel = 0,
+        Active = false, ZIndex = Z.lighting})
+    shadeGradient = gradient(backgroundShade, C.bg, C.bg)
+    local glow = make("Frame", window, {Name = "CharacterLight", Position = UDim2.fromScale(0.02, 0.1),
+        Size = UDim2.fromScale(0.32, 0.82), BackgroundColor3 = C.magenta,
+        BackgroundTransparency = 0.965, BorderSizePixel = 0, Active = false, ZIndex = Z.lighting})
+    corners(glow, 120)
+    local lightGradient = gradient(glow, C.magenta, C.pink, 35)
+    lightGradient.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 1),
+        NumberSequenceKeypoint.new(0.5, 0.4), NumberSequenceKeypoint.new(1, 1)})
+    petalLayer = make("Frame", window, {Name = "SakuraLayer", Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true, Active = false, ZIndex = Z.petals})
+    table.insert(ambientTweens, TweenService:Create(backgroundImage,
+        TweenInfo.new(5.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        {Position = UDim2.new(0.5, 0, 0.5, 2), Size = UDim2.fromScale(1.010, 1.010)}))
+    table.insert(ambientTweens, TweenService:Create(glow,
+        TweenInfo.new(4.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        {BackgroundTransparency = 0.945}))
+    for _, t in ipairs(ambientTweens) do t:Play() end
+end
+local function removePetal(object)
+    local entry = activePetals[object]
+    if not entry then return end
+    activePetals[object] = nil; petalCount -= 1
+    disconnect(entry.connections)
+    if entry.tween then entry.tween:Cancel() end
+    object:Destroy()
+end
+local function spawnPetal()
+    if not alive or minimized or petalCount >= 18 then return end
+    local startX = random:NextNumber() < 0.25 and random:NextNumber(0.04, 0.20) or -0.025
+    local startY = random:NextNumber(0.02, 0.90)
+    local endY = startY + random:NextNumber(0.04, 0.15)
+    local width, height = random:NextInteger(5, 9), random:NextInteger(9, 16)
+    local object = make("Frame", petalLayer, {Name = "SakuraPetal", AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(startX, startY), Size = UDim2.fromOffset(width, height),
+        BackgroundColor3 = C.pale:Lerp(C.pink, random:NextNumber(0.05, 0.45)),
+        BackgroundTransparency = random:NextNumber(0.28, 0.55), Rotation = random:NextNumber(-100, 100),
+        BorderSizePixel = 0, Active = false, ZIndex = Z.petals})
+    make("UICorner", object, {CornerRadius = UDim.new(0.7, 0)})
+    local entry = {connections = {}}
+    activePetals[object] = entry; petalCount += 1
+    local duration = random:NextNumber(8.5, 12.5)
+    local rotation = object.Rotation + random:NextNumber(150, 400)
+    local function segment(position, angle, second)
+        if not alive or not activePetals[object] then return end
+        entry.tween = TweenService:Create(object,
+            TweenInfo.new(duration / 2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+            {Position = position, Rotation = angle})
+        table.insert(entry.connections, entry.tween.Completed:Once(function(playback)
+            if playback ~= Enum.PlaybackState.Completed or not alive or not activePetals[object] then return end
+            if second then removePetal(object)
+            else segment(UDim2.fromScale(1.035, endY), rotation, true) end
+        end))
+        entry.tween:Play()
+        if minimized then entry.tween:Pause() end
     end
-    if ANIME_IMAGE_ID ~= "" then
-        make("ImageLabel", anime, {Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
-            Image = ANIME_IMAGE_ID, ScaleType = Enum.ScaleType.Crop, ImageTransparency = 0.15, Active = false})
-        local shade = frame(anime, 0, 0, 366, 438, C.bg, 0.1)
-        local g = gradient(shade, C.bg, C.bg)
-        g.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.05), NumberSequenceKeypoint.new(0.5, 0.7), NumberSequenceKeypoint.new(1, 0.25)})
-    end
-    local japanese = text(anime, "生\nき\n続\nけ\nる", 316, 104, 36, 180, 22, C.pink)
-    japanese.TextTruncate = Enum.TextTruncate.None
-    text(anime, "Takizawa_swaga", 18, 357, 330, 34, 25, C.pink).Font = Enum.Font.GothamBold
-    local tagline = text(anime, "Just a script...\nfor a better grind.", 178, 398, 180, 38, 12, C.muted)
-    tagline.TextTruncate = Enum.TextTruncate.None
-    for i = 1, 12 do
-        local flower = text(anime, "✿", (i * 83) % 340, (i * 127) % 430, 30, 32, 18 + (i % 3) * 5, C.pink)
-        flower.Rotation = (i * 29) % 90; flower.TextTransparency = 0.35 + (i % 3) * 0.15
-    end
+    segment(UDim2.fromScale((startX + 1.035) / 2, (startY + endY) / 2 + random:NextNumber(-0.025, 0.025)),
+        (object.Rotation + rotation) / 2, false)
+end
+local function schedulePetal()
+    if not alive or minimized or particleThread then return end
+    -- One cancellable scheduled task for the whole system, no per-frame loops.
+    particleThread = task.delay(random:NextNumber(0.60, 0.95), function()
+        particleThread = nil
+        if not alive or minimized then return end
+        spawnPetal(); schedulePetal()
+    end)
+end
+local function setAtmospherePaused(paused)
+    anime.Visible = not paused; backgroundShade.Visible = not paused; petalLayer.Visible = not paused
+    local lighting = window:FindFirstChild("CharacterLight")
+    if lighting then lighting.Visible = not paused end
+    if particleThread then task.cancel(particleThread); particleThread = nil end
+    for _, t in ipairs(ambientTweens) do if paused then t:Pause() else t:Play() end end
+    for _, entry in pairs(activePetals) do if paused then entry.tween:Pause() else entry.tween:Play() end end
+    if not paused then schedulePetal() end
 end
 local function createSidebar()
     sidebar = frame(body, 12, 10, 176, 330, C.bg, 1)
@@ -479,7 +562,11 @@ local function fit(center)
     uiScale.Scale = math.min(1, (viewport.X - 20) / W, (viewport.Y - 20) / H)
     window.Size = UDim2.fromOffset(W, minimized and 72 or H)
     body.Size = UDim2.fromOffset(W - 28, H - 86)
-    anime.Visible = not portrait
+    backgroundImage.ImageTransparency = portrait and 0.55 or 0
+    backgroundShade.Position = UDim2.fromScale(portrait and 0 or 0.33, 0)
+    backgroundShade.Size = UDim2.fromScale(portrait and 1 or 0.67, 1)
+    shadeGradient.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, portrait and 0.72 or 1),
+        NumberSequenceKeypoint.new(0.5, portrait and 0.70 or 0.93), NumberSequenceKeypoint.new(1, portrait and 0.65 or 0.75)})
     sidebar.Position = UDim2.fromOffset(portrait and 0 or 12, portrait and 0 or 10)
     sidebar.Size = UDim2.fromOffset(portrait and 508 or 176, portrait and 98 or 330)
     local order = {"home", "trade", "items", "settings", "stats", "info"}
@@ -497,6 +584,7 @@ local function toggleMinimize()
     closeDropdown(); sliderInput = nil
     minimized = not minimized
     body.Visible = not minimized
+    setAtmospherePaused(minimized)
     header.Minimize.Text = minimized and "+" or "−"
     animate(window, {Size = UDim2.fromOffset(W, minimized and 72 or H)})
     place(Vector2.new(window.Position.X.Offset, window.Position.Y.Offset))
@@ -504,6 +592,12 @@ end
 local function cleanup()
     if not alive then return end
     alive = false; state.running = false; state.generation += 1
+    if particleThread then task.cancel(particleThread); particleThread = nil end
+    for _, t in ipairs(ambientTweens) do t:Cancel() end
+    table.clear(ambientTweens)
+    local petals = {}
+    for object in pairs(activePetals) do table.insert(petals, object) end
+    for _, object in ipairs(petals) do removePetal(object) end
     sliderInput = nil; closeDropdown()
     disconnect(connections); disconnect(rowScope)
     if cameraConnection then cameraConnection:Disconnect() end
@@ -539,14 +633,17 @@ local function createMainWindow()
         if success and gui.Parent == parent then attached = true; break end
     end
     assert(attached, "Unable to parent GUI")
+    -- Connect before starting effects, so rerun also cleans a partial build.
+    connect(gui.Destroying, cleanup)
     window = frame(gui, 0, 0, W, H, C.bg, 0.07)
     window.Name = "Window"; corners(window, 12); stroke(window, C.pink, 0.1)
-    gradient(window, Color3.fromRGB(25, 17, 34), C.bg, 25)
+    window.ClipsDescendants = true
     uiScale = make("UIScale", window, {Scale = 1})
     for i = 1, 3 do
         local glow = frame(window, -i * 2, -i * 2, W + i * 4, H + i * 4, C.bg, 1)
         glow.Size = UDim2.new(1, i * 4, 1, i * 4)
         corners(glow, 12 + i * 2); stroke(glow, C.pink, 0.88 + i * 0.025, 2)
+        glow.ZIndex = Z.decoration
     end
     body = frame(window, 14, 78, W - 28, H - 86, C.bg, 1)
     createAnimePanel(); createSidebar()
@@ -559,7 +656,10 @@ local function createMainWindow()
 end
 local function createHeader()
     header = frame(window, 0, 0, W, 72, C.bg, 1)
-    header.Size = UDim2.new(1, 0, 0, 72); header.Active = true
+    header.Size = UDim2.new(1, 0, 0, 72); header.Active = true; header.ZIndex = Z.header
+    make("Frame", header, {Position = UDim2.new(0, 14, 1, -1), Size = UDim2.new(1, -28, 0, 1),
+        BackgroundColor3 = C.pink, BackgroundTransparency = 0.78, BorderSizePixel = 0,
+        Active = false, ZIndex = Z.decoration})
     text(header, "✿", 16, 12, 38, 42, 31, C.pink)
     local title = text(header, 'Takizawa<font color="#FF6FBB">_swaga</font>', 62, 10, 370, 34, 26)
     title.RichText = true; title.Font = Enum.Font.GothamBold
@@ -592,7 +692,6 @@ end
 createMainWindow(); createHeader()
 createHomePage(); createAutoTradePage(); createItemsPage(); createSettingsPage(); createStatsPage(); createInfoPage()
 updateTrade(false); updateSettings(); switchPage("home")
-connect(gui.Destroying, cleanup)
 local function watchCamera()
     if cameraConnection then cameraConnection:Disconnect() end
     local camera = workspace.CurrentCamera
@@ -601,6 +700,8 @@ local function watchCamera()
 end
 connect(workspace:GetPropertyChangedSignal("CurrentCamera"), watchCamera)
 watchCamera(); fit(true)
+for _ = 1, 8 do spawnPetal() end
+schedulePetal()
 local lastSecond = -1
 connect(RunService.Heartbeat, function(delta)
     if state.running then state.elapsed += delta end
