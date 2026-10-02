@@ -3,7 +3,7 @@ local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
-local ANIME_IMAGE_ID = "rbxassetid://81395037988634"
+local ANIME_IMAGE_ID = "rbxassetid://84331461878010"
 -- Sibling subtrees: art < lighting < petals < glass < controls < popups.
 local Z = {background = 1, lighting = 2, petals = 3, glass = 5, decoration = 6, control = 7, header = 8, popup = 50}
 local GUI_NAME = "TakizawaAdoptMeGUI"
@@ -635,19 +635,6 @@ local function createMainWindow()
     assert(attached, "Unable to parent GUI")
     -- Connect before starting effects, so rerun also cleans a partial build.
     connect(gui.Destroying, cleanup)
-    -- Temporary asset diagnostic: independent of Window clipping and effects.
-    local diagnosticImage = make("ImageLabel", gui, {
-        Name = "AnimeAssetDiagnostic",
-        Image = "rbxassetid://81395037988634",
-        BackgroundTransparency = 0,
-        BackgroundColor3 = Color3.fromRGB(40, 0, 40),
-        ImageTransparency = 0,
-        ScaleType = Enum.ScaleType.Fit,
-        Size = UDim2.fromOffset(400, 225),
-        Position = UDim2.fromOffset(20, 120),
-        ZIndex = 100, Visible = true, Active = false,
-    })
-    print("[AnimeAssetDiagnostic] Created ImageLabel; Image = " .. diagnosticImage.Image)
     window = frame(gui, 0, 0, W, H, C.bg, 0.07)
     window.Name = "Window"; corners(window, 12); stroke(window, C.pink, 0.1)
     window.ClipsDescendants = true
