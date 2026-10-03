@@ -47,7 +47,7 @@ local ITEMS = {
     {id = "fly_potion", name = "Fly Potion"},
 }
 local C = {
-    bg = Color3.fromRGB(12, 10, 20), glass = Color3.fromRGB(26, 13, 24),
+    bg = Color3.fromRGB(12, 10, 20), glass = Color3.fromRGB(34, 19, 31),
     pink = Color3.fromRGB(255, 111, 187), magenta = Color3.fromRGB(172, 44, 117),
     pale = Color3.fromRGB(255, 202, 230), text = Color3.fromRGB(246, 235, 247),
     muted = Color3.fromRGB(173, 149, 178), line = Color3.fromRGB(91, 62, 91),
@@ -62,7 +62,7 @@ local stats = {sent = 0, success = 0, invalid = 0, errors = 0}
 local statLabels, tradeViews, settingViews, statusViews, timerViews = {}, {}, {}, {}, {}
 local logs, logLabels = {}, {}
 local schemeSummaries = {}
-local gui, window, body, header, sidebar, anime, pageHost, uiScale, popupLayer
+local gui, window, body, header, sidebar, anime, pageHost, uiScale, contentScale, popupLayer
 local W, H, portrait = 900, 530, false
 local activePage = "home"
 local cameraConnection, dropdownClose, dropdownAnchor, listRefresh
@@ -119,7 +119,7 @@ local function text(parent, value, x, y, width, height, size, color)
 end
 local function createButton(parent, value, x, y, width, height, bright, scope)
     local base = bright and C.magenta or C.glass
-    local transparency = bright and 0.15 or 0.24
+    local transparency = bright and 0.20 or 0.40
     local b = make("TextButton", parent, {Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(width, height),
         BackgroundColor3 = base, BackgroundTransparency = transparency, AutoButtonColor = false,
         Text = value, TextColor3 = bright and C.text or C.pale, TextSize = 15, Font = Enum.Font.GothamMedium, ZIndex = Z.control})
@@ -127,7 +127,7 @@ local function createButton(parent, value, x, y, width, height, bright, scope)
     if bright then gradient(b, C.pink, C.magenta, 25) end
     local function appearance(hover, pressed)
         local selected = b:GetAttribute("GlassSelected") == true
-        local opacity = selected and 0.16 or transparency
+        local opacity = selected and 0.22 or transparency
         animate(b, {BackgroundColor3 = (bright or selected) and C.magenta or (hover and Color3.fromRGB(43, 20, 37) or base),
             BackgroundTransparency = opacity - (pressed and 0.08 or hover and 0.04 or 0),
             TextTransparency = pressed and 0.12 or 0})
@@ -145,9 +145,11 @@ local function createButton(parent, value, x, y, width, height, bright, scope)
     return b
 end
 local function createCard(parent, title, x, y, width, height)
-    local card = frame(parent, x, y, width, height, C.glass, 0.24)
-    corners(card); stroke(card, C.pink, 0.64)
-    gradient(card, Color3.fromRGB(42, 22, 36), Color3.fromRGB(16, 13, 23), 70)
+    local card = frame(parent, x, y, width, height, C.glass, 0.40)
+    corners(card); stroke(card, C.pink, 0.70)
+    -- UIGradient multiplies the surface colour: use light tint stops rather
+    -- than multiplying dark glass by another near-black gradient.
+    gradient(card, Color3.fromRGB(246, 210, 232), Color3.fromRGB(188, 172, 198), 70)
     text(card, title, 12, 8, width - 24, 22, 13, C.pale)
     frame(card, 10, 34, width - 20, 1, C.line, 0.4).ZIndex = Z.decoration
     return card
@@ -398,7 +400,7 @@ local function createItemsPage()
         end
         table.clear(rowObjects)
         for i, scheme in ipairs(state.schemes) do
-            local row = frame(list, 0, (i - 1) * 46, 470, 40, C.glass, 0.26)
+            local row = frame(list, 0, (i - 1) * 46, 470, 40, C.glass, 0.42)
             table.insert(rowObjects, row); corners(row); stroke(row, state.selected == i and C.pink or C.line)
             local select = createButton(row, i .. "  " .. scheme.give.name .. " x" .. scheme.giveQuantity .. " → " .. scheme.want.name .. " x" .. scheme.wantQuantity,
                 0, 0, 420, 40, state.selected == i, rowScope)
@@ -467,10 +469,10 @@ local function switchPage(id)
         local selected = name == id
         entry.gradient.Enabled = selected
         entry.stroke.Color = selected and C.pink or C.line
-        entry.stroke.Transparency = selected and 0.18 or 0.58
+        entry.stroke.Transparency = selected and 0.24 or 0.64
         entry.button:SetAttribute("GlassSelected", selected)
         animate(entry.button, {BackgroundColor3 = selected and C.magenta or C.glass,
-            BackgroundTransparency = selected and 0.16 or 0.24})
+            BackgroundTransparency = selected and 0.22 or 0.40})
     end
     local page = pages[id]
     page.CanvasPosition = Vector2.zero
@@ -573,7 +575,7 @@ local function createSidebar()
         {"settings", "⚙  Настройки"}, {"stats", "▥  Статистика"}, {"info", "ⓘ  Инфо"}}) do
         local b = createButton(sidebar, entry[2], 0, (i - 1) * 52, 176, 44)
         b.TextSize = 15
-        local g = gradient(b, C.magenta, Color3.fromRGB(46, 24, 49)); g.Enabled = false
+        local g = gradient(b, Color3.fromRGB(255, 220, 241), Color3.fromRGB(186, 146, 186)); g.Enabled = false
         navButtons[entry[1]] = {button = b, gradient = g, stroke = b:FindFirstChildOfClass("UIStroke")}
         connect(b.Activated, function() switchPage(entry[1]) end)
     end
@@ -593,24 +595,41 @@ local function fit(center)
     if not camera then return end
     viewport = camera.ViewportSize
     portrait = viewport.Y > viewport.X
-    W, H = portrait and 536 or 900, portrait and 722 or 530
-    uiScale.Scale = math.min(1, (viewport.X - 20) / W, (viewport.Y - 20) / H)
+    if portrait then
+        W, H = 536, 722
+        uiScale.Scale = math.min(1, (viewport.X - 20) / W, (viewport.Y - 20) / H)
+    else
+        -- Derive the canvas from BOTH viewport axes; no fixed desktop-size cap.
+        H = 530
+        uiScale.Scale = viewport.Y * 0.92 / H
+        W = viewport.X * 0.94 / uiScale.Scale
+    end
     window.Size = UDim2.fromOffset(W, minimized and 72 or H)
-    body.Size = UDim2.fromOffset(W - 28, H - 86)
+    local padding = portrait and 14 or math.clamp(W * 0.014, 10, 16)
+    body.Position = UDim2.fromOffset(padding, 78)
+    body.Size = UDim2.fromOffset(W - padding * 2, H - 86)
+    -- Shift the existing full-window art slightly right, without changing its
+    -- aspect ratio or breathing tween; sidebar stays to the left of both eyes.
+    anime.Position = UDim2.fromScale(portrait and 0 or 0.03, 0)
     backgroundImage.ImageTransparency = portrait and 0.55 or 0
-    backgroundShade.Position = UDim2.fromScale(portrait and 0 or 0.33, 0)
-    backgroundShade.Size = UDim2.fromScale(portrait and 1 or 0.67, 1)
+    backgroundShade.Position = UDim2.fromScale(portrait and 0 or 0.465, 0)
+    backgroundShade.Size = UDim2.fromScale(portrait and 1 or 0.535, 1)
     shadeGradient.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, portrait and 0.72 or 1),
-        NumberSequenceKeypoint.new(0.5, portrait and 0.70 or 0.93), NumberSequenceKeypoint.new(1, portrait and 0.65 or 0.75)})
-    sidebar.Position = UDim2.fromOffset(portrait and 0 or 12, portrait and 0 or 10)
-    sidebar.Size = UDim2.fromOffset(portrait and 508 or 176, portrait and 98 or 330)
+        NumberSequenceKeypoint.new(0.5, portrait and 0.70 or 0.96), NumberSequenceKeypoint.new(1, portrait and 0.65 or 0.85)})
+    local sidebarWidth = portrait and 508 or W * 0.175
+    local navHeight = math.min(math.max(44, 32 / uiScale.Scale), (H - 102) / 6 - 8)
+    sidebar.Position = UDim2.fromOffset(0, portrait and 0 or 10)
+    sidebar.Size = UDim2.fromOffset(sidebarWidth, portrait and 98 or H - 96)
     local order = {"home", "trade", "items", "settings", "stats", "info"}
     for i, id in ipairs(order) do
-        navButtons[id].button.Position = portrait and UDim2.fromOffset(((i - 1) % 3) * 170, math.floor((i - 1) / 3) * 48) or UDim2.fromOffset(0, (i - 1) * 52)
-        navButtons[id].button.Size = UDim2.fromOffset(portrait and 162 or 176, portrait and 40 or 44)
+        navButtons[id].button.Position = portrait and UDim2.fromOffset(((i - 1) % 3) * 170, math.floor((i - 1) / 3) * 48) or UDim2.fromOffset(0, (i - 1) * (navHeight + 8))
+        navButtons[id].button.Size = UDim2.fromOffset(portrait and 162 or sidebarWidth, portrait and 40 or navHeight)
     end
-    pageHost.Position = UDim2.fromOffset(portrait and 4 or 372, portrait and 104 or 0)
-    pageHost.Size = UDim2.fromOffset(500, portrait and 522 or 438)
+    local contentLeft = W * 0.465
+    local contentWidth = W - contentLeft - padding * 2
+    contentScale.Scale = portrait and 1 or contentWidth / 500
+    pageHost.Position = UDim2.fromOffset(portrait and 4 or contentLeft - padding, portrait and 104 or 0)
+    pageHost.Size = UDim2.fromOffset(500, portrait and 522 or (H - 86) / contentScale.Scale)
     closeDropdown(); sliderInput = nil
     if center then place((viewport - Vector2.new(W, H) * uiScale.Scale) / 2)
     else place(Vector2.new(window.Position.X.Offset, window.Position.Y.Offset)) end
@@ -683,6 +702,7 @@ local function createMainWindow()
     body = frame(window, 14, 78, W - 28, H - 86, C.bg, 1)
     createAnimePanel(); createSidebar()
     pageHost = frame(body, 372, 0, 500, 438, C.bg, 1)
+    contentScale = make("UIScale", pageHost, {Scale = 1})
     popupLayer = frame(window, 0, 0, W, H, C.bg, 1)
     popupLayer.Size = UDim2.fromScale(1, 1); popupLayer.ZIndex = 50; popupLayer.Visible = false
     local dismiss = make("TextButton", popupLayer, {Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
