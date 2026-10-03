@@ -3,7 +3,41 @@ local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
-local ANIME_IMAGE_ID = "rbxassetid://84331461878010"
+local ANIME_IMAGE_URL = "https://raw.githubusercontent.com/Takizawa-swaga/AdoptMeDeltaBot/main/assets/anime.png"
+local ANIME_LOCAL_PATH = "Takizawa_anime.png"
+local function loadAnimeAsset()
+    local saveFile, registerAsset = writefile, getcustomasset
+    if type(saveFile) ~= "function" or type(registerAsset) ~= "function" then
+        warn("[AnimeBackground] writefile or getcustomasset unavailable")
+        return nil
+    end
+    local ok, data = pcall(function() return game:HttpGet(ANIME_IMAGE_URL) end)
+    if not ok then
+        warn("[AnimeBackground] Download failed: " .. tostring(data):sub(1, 180))
+        return nil
+    end
+    if type(data) ~= "string" or #data < 33 or #data > 20 * 1024 * 1024 then
+        warn("[AnimeBackground] Invalid download type or size")
+        return nil
+    end
+    if data:sub(1, 8) ~= "\137PNG\r\n\26\n" then
+        warn("[AnimeBackground] Download is not a PNG")
+        return nil
+    end
+    -- Preserve the binary response exactly; no text decoding or cache APIs.
+    local saved, saveError = pcall(saveFile, ANIME_LOCAL_PATH, data)
+    if not saved or saveError == false then
+        warn("[AnimeBackground] Save failed: " .. tostring(saveError):sub(1, 180))
+        return nil
+    end
+    local registered, uri = pcall(registerAsset, ANIME_LOCAL_PATH)
+    if not registered or type(uri) ~= "string" or uri == "" then
+        warn("[AnimeBackground] Registration failed: " .. tostring(uri):sub(1, 180))
+        return nil
+    end
+    return uri
+end
+local ANIME_IMAGE_ID = loadAnimeAsset()
 -- Sibling subtrees: art < lighting < petals < glass < controls < popups.
 local Z = {background = 1, lighting = 2, petals = 3, glass = 5, decoration = 6, control = 7, header = 8, popup = 50}
 local GUI_NAME = "TakizawaAdoptMeGUI"
@@ -451,7 +485,8 @@ local function createAnimePanel()
         Active = false, ZIndex = Z.background})
     backgroundImage = make("ImageLabel", anime, {Name = "AnimeArt", AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(1.004, 1.004),
-        BackgroundTransparency = 1, Image = ANIME_IMAGE_ID, ImageTransparency = 0,
+        BackgroundTransparency = 1, Image = ANIME_IMAGE_ID or "", ImageTransparency = 0,
+        Visible = ANIME_IMAGE_ID ~= nil,
         ScaleType = Enum.ScaleType.Fit, Active = false, Selectable = false, ZIndex = Z.background})
     backgroundShade = make("Frame", window, {Name = "RightShade", Position = UDim2.fromScale(0.33, 0),
         Size = UDim2.fromScale(0.67, 1), BackgroundColor3 = C.bg, BorderSizePixel = 0,
