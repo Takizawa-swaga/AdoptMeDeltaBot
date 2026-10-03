@@ -70,6 +70,8 @@ local WORK = {left = 0.60, top = 0.15, width = 0.365, height = 0.71}
 local RAIL = {width = 52, button = 46, gap = 6, height = 306}
 -- Optional Roblox/custom asset URI for a full-canvas transparent hair layer.
 -- No downloads or effect are enabled until a separate clean layer exists.
+-- Placeholder file: assets/hair_overlay.png (transparent 1890x832 canvas).
+-- Supply a registered Roblox/custom asset URI here once that layer exists.
 local HAIR_OVERLAY_IMAGE = ""
 local W, H, portrait = LANDSCAPE_HEIGHT * ART_ASPECT, LANDSCAPE_HEIGHT, false
 local navLayout
@@ -77,6 +79,8 @@ local activePage = "home"
 local cameraConnection, dropdownClose, dropdownAnchor, listRefresh
 local backgroundImage, backgroundShade, shadeGradient, petalLayer, hairOverlay, hairTween
 local ambientTweens, activePetals = {}, {}
+local navPulseTween, navPulseValue, navPulseEntry
+local navPulseConnections = {}
 local particleThread, petalCount = nil, 0
 local random = Random.new()
 local function connect(signal, callback, scope)
@@ -491,7 +495,34 @@ local function createInfoPage()
     log.TextYAlignment = Enum.TextYAlignment.Top; log.TextTruncate = Enum.TextTruncate.None
     table.insert(logLabels, {label = log, scroll = scroll})
 end
+-- One tiny scalar tween drives only the selected button. No frame loop.
+local function stopNavPulse()
+    disconnect(navPulseConnections)
+    if navPulseTween then navPulseTween:Cancel(); navPulseTween = nil end
+    if navPulseValue then navPulseValue:Destroy(); navPulseValue = nil end
+    if navPulseEntry then
+        navPulseEntry.stroke.Transparency = 0.48
+        for _, primitive in ipairs(navPulseEntry.iconParts) do primitive.BackgroundTransparency = 0 end
+        for _, outline in ipairs(navPulseEntry.iconStrokes) do outline.Transparency = 0.08 end
+        navPulseEntry = nil
+    end
+end
+local function startNavPulse(entry)
+    navPulseEntry = entry
+    navPulseValue = make("NumberValue", gui, {Name = "ActiveNavigationPulse", Value = 0})
+    connect(navPulseValue:GetPropertyChangedSignal("Value"), function()
+        if not alive or minimized then return end
+        local amount = navPulseValue.Value * 0.06
+        entry.stroke.Transparency = 0.48 + amount
+        for _, primitive in ipairs(entry.iconParts) do primitive.BackgroundTransparency = amount end
+        for _, outline in ipairs(entry.iconStrokes) do outline.Transparency = 0.08 + amount end
+    end, navPulseConnections)
+    navPulseTween = TweenService:Create(navPulseValue,
+        TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {Value = 1})
+    if not minimized then navPulseTween:Play() end
+end
 local function switchPage(id)
+    stopNavPulse()
     closeDropdown(); sliderInput = nil; sliderTrack = nil
     activePage = id
     for name, page in pairs(pages) do page.Visible = name == id end
@@ -509,6 +540,7 @@ local function switchPage(id)
         animate(entry.button, {BackgroundColor3 = selected and C.magenta or C.glass,
             BackgroundTransparency = selected and 0.64 or 0.86})
     end
+    startNavPulse(navButtons[id])
     local page = pages[id]
     page.CanvasPosition = Vector2.zero
     page.Position = UDim2.fromOffset(6, 0)
@@ -541,7 +573,7 @@ local function createAnimePanel()
     petalLayer = make("Frame", window, {Name = "SakuraLayer", Size = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true, Active = false, ZIndex = Z.petals})
     table.insert(ambientTweens, TweenService:Create(glow,
-        TweenInfo.new(2.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        TweenInfo.new(2.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
         {BackgroundTransparency = 0.983, Size = UDim2.fromScale(0.16064, 0.36144),
             Position = UDim2.new(0.23, 0, 0.49, 2)}))
     hairOverlay = make("ImageLabel", anime, {Name = "HairOverlay", AnchorPoint = Vector2.new(0.5, 0.5),
@@ -552,9 +584,10 @@ local function createAnimePanel()
     make("UIAspectRatioConstraint", hairOverlay, {AspectRatio = ART_ASPECT,
         AspectType = Enum.AspectType.FitWithinMaxSize})
     -- The prepared hair tween is intentionally not played without an asset.
-    -- fit() caps the displacement at 1.5 actual screen pixels at every scale.
+    -- 7.6-second hair cycle drifts out of phase with the 5-second breathing.
+    -- fit() caps displacement at 1.5 screen pixels and 2 logical pixels.
     hairTween = TweenService:Create(hairOverlay,
-        TweenInfo.new(5.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        TweenInfo.new(3.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
         {Position = UDim2.new(0.5, 1.5, 0.5, 0.5)})
     table.insert(ambientTweens, hairTween)
     for _, t in ipairs(ambientTweens) do
@@ -583,7 +616,7 @@ local function spawnPetal()
     make("UICorner", object, {CornerRadius = UDim.new(0.7, 0)})
     local entry = {connections = {}}
     activePetals[object] = entry; petalCount += 1
-    local duration = random:NextNumber(8.5, 12.5)
+    local duration = random:NextNumber(12, 17)
     local rotation = object.Rotation + random:NextNumber(30, 70)
     local function segment(position, angle, second)
         if not alive or not activePetals[object] then return end
@@ -604,7 +637,7 @@ end
 local function schedulePetal()
     if not alive or minimized or particleThread then return end
     -- One cancellable scheduled task for the whole system, no per-frame loops.
-    particleThread = task.delay(random:NextNumber(1.4, 2.2), function()
+    particleThread = task.delay(random:NextNumber(2.0, 3.2), function()
         particleThread = nil
         if not alive or minimized then return end
         spawnPetal(); schedulePetal()
@@ -620,6 +653,9 @@ local function setAtmospherePaused(paused)
         elseif t ~= hairTween or hairOverlay.Visible then t:Play() end
     end
     for _, entry in pairs(activePetals) do if paused then entry.tween:Pause() else entry.tween:Play() end end
+    if navPulseTween then
+        if paused then navPulseTween:Pause() else navPulseTween:Play() end
+    end
     if not paused then schedulePetal() end
 end
 -- Resolution-independent line icons made from passive UI primitives, not
@@ -728,13 +764,13 @@ local function fit(center)
     light.Size = UDim2.fromScale(0.16, 0.36)
     light.BackgroundTransparency = 0.992
     ambientTweens[1] = TweenService:Create(light,
-        TweenInfo.new(2.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        TweenInfo.new(2.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
         {BackgroundTransparency = 0.983, Size = UDim2.fromScale(0.16064, 0.36144),
-            Position = UDim2.new(0.23, 0, 0.49, 2 / uiScale.Scale)})
+            Position = UDim2.new(0.23, 0, 0.49, math.min(2, 2 / uiScale.Scale))})
     hairOverlay.Position = UDim2.fromScale(0.5, 0.5)
     hairTween = TweenService:Create(hairOverlay,
-        TweenInfo.new(5.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-        {Position = UDim2.new(0.5, 1.5 / uiScale.Scale, 0.5, 0.5 / uiScale.Scale)})
+        TweenInfo.new(3.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        {Position = UDim2.new(0.5, math.min(2, 1.5 / uiScale.Scale), 0.5, math.min(1, 0.5 / uiScale.Scale))})
     ambientTweens[2] = hairTween
     if not minimized then
         ambientTweens[1]:Play()
@@ -769,6 +805,7 @@ end
 local function cleanup()
     if not alive then return end
     alive = false; state.running = false; state.generation += 1
+    stopNavPulse()
     if particleThread then task.cancel(particleThread); particleThread = nil end
     for _, t in ipairs(ambientTweens) do t:Cancel() end
     table.clear(ambientTweens)
