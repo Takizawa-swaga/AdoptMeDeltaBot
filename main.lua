@@ -48,8 +48,8 @@ local ITEMS = {
 }
 local C = {
     bg = Color3.fromRGB(12, 10, 20), glass = Color3.fromRGB(34, 19, 31),
-    pink = Color3.fromRGB(255, 111, 187), magenta = Color3.fromRGB(172, 44, 117),
-    pale = Color3.fromRGB(255, 202, 230), text = Color3.fromRGB(246, 235, 247),
+    pink = Color3.fromRGB(194, 119, 151), magenta = Color3.fromRGB(104, 47, 74),
+    pale = Color3.fromRGB(218, 194, 209), text = Color3.fromRGB(246, 235, 247),
     muted = Color3.fromRGB(173, 149, 178), line = Color3.fromRGB(91, 62, 91),
     green = Color3.fromRGB(73, 221, 117), red = Color3.fromRGB(255, 101, 129),
 }
@@ -66,12 +66,16 @@ local gui, window, body, header, sidebar, anime, pageHost, uiScale, contentScale
 -- Composition coordinates refer to the unchanged 1890x832 assets/anime.png.
 local ART_ASPECT = 1890 / 832
 local LANDSCAPE_HEIGHT = 600
-local WORK = {left = 0.625, top = 0.15, width = 0.352, height = 0.71}
+local WORK = {left = 0.60, top = 0.15, width = 0.365, height = 0.71}
+local RAIL = {width = 52, button = 46, gap = 6, height = 306}
+-- Optional Roblox/custom asset URI for a full-canvas transparent hair layer.
+-- No downloads or effect are enabled until a separate clean layer exists.
+local HAIR_OVERLAY_IMAGE = ""
 local W, H, portrait = LANDSCAPE_HEIGHT * ART_ASPECT, LANDSCAPE_HEIGHT, false
 local navLayout
 local activePage = "home"
 local cameraConnection, dropdownClose, dropdownAnchor, listRefresh
-local backgroundImage, backgroundShade, shadeGradient, petalLayer
+local backgroundImage, backgroundShade, shadeGradient, petalLayer, hairOverlay, hairTween
 local ambientTweens, activePetals = {}, {}
 local particleThread, petalCount = nil, 0
 local random = Random.new()
@@ -124,7 +128,7 @@ local function text(parent, value, x, y, width, height, size, color)
 end
 local function createButton(parent, value, x, y, width, height, bright, scope)
     local base = bright and C.magenta or C.glass
-    local transparency = bright and 0.20 or 0.40
+    local transparency = bright and 0.38 or 0.48
     local b = make("TextButton", parent, {Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(width, height),
         BackgroundColor3 = base, BackgroundTransparency = transparency, AutoButtonColor = false,
         Text = value, TextColor3 = bright and C.text or C.pale, TextSize = 15, Font = Enum.Font.GothamMedium, ZIndex = Z.control})
@@ -132,8 +136,8 @@ local function createButton(parent, value, x, y, width, height, bright, scope)
     if bright then gradient(b, C.pink, C.magenta, 25) end
     local function appearance(hover, pressed)
         local selected = b:GetAttribute("GlassSelected") == true
-        local resting = b:GetAttribute("CompactNavigation") and 0.68 or transparency
-        local opacity = selected and (b:GetAttribute("CompactNavigation") and 0.42 or 0.22) or resting
+        local resting = b:GetAttribute("CompactNavigation") and 0.86 or transparency
+        local opacity = selected and (b:GetAttribute("CompactNavigation") and 0.64 or 0.32) or resting
         animate(b, {BackgroundColor3 = (bright or selected) and C.magenta or (hover and Color3.fromRGB(43, 20, 37) or base),
             BackgroundTransparency = opacity - (pressed and 0.08 or hover and 0.04 or 0),
             TextTransparency = pressed and 0.12 or 0})
@@ -151,9 +155,9 @@ local function createButton(parent, value, x, y, width, height, bright, scope)
     return b
 end
 local function createCard(parent, title, x, y, width, height)
-    local card = frame(parent, x, y, width, height, C.glass, 0.28)
+    local card = frame(parent, x, y, width, height, C.glass, 0.40)
     card.Name = title
-    corners(card); stroke(card, C.pink, 0.70)
+    corners(card); stroke(card, C.pink, 0.78)
     -- UIGradient multiplies the surface colour: use light tint stops rather
     -- than multiplying dark glass by another near-black gradient.
     gradient(card, Color3.fromRGB(246, 210, 232), Color3.fromRGB(188, 172, 198), 70)
@@ -265,7 +269,7 @@ local function bindDropdown(button, options, selected, callback)
     end)
 end
 local function createProposal(parent, y)
-    local card = createCard(parent, "ПРЕДЛОЖЕНИЕ", 0, y, 500, 136)
+    local card = createCard(parent, "ПРЕДЛОЖЕНИЕ", 0, y, 500, 140)
     text(card, "Я отдаю", 12, 30, 210, 20, 13, C.muted)
     text(card, "Я получаю", 278, 30, 210, 20, 13, C.muted)
     local give = createButton(card, "", 12, 52, 210, 30)
@@ -275,10 +279,10 @@ local function createProposal(parent, y)
     local view = {give = give, want = want}
     for _, side in ipairs({"give", "want"}) do
         local x = side == "give" and 12 or 278
-        local minus = createButton(card, "−", x, 88, 54, 26)
-        view[side .. "Quantity"] = text(card, "1", x + 60, 88, 90, 26, 16)
+        local minus = createButton(card, "−", x, 88, 54, 28)
+        view[side .. "Quantity"] = text(card, "1", x + 60, 88, 90, 28, 16)
         view[side .. "Quantity"].TextXAlignment = Enum.TextXAlignment.Center
-        local plus = createButton(card, "+", x + 156, 88, 54, 26)
+        local plus = createButton(card, "+", x + 156, 88, 54, 28)
         connect(minus.Activated, function()
             state[side .. "Quantity"] = math.max(1, state[side .. "Quantity"] - 1); updateTrade(true)
         end)
@@ -288,7 +292,7 @@ local function createProposal(parent, y)
         bindDropdown(view[side], ITEMS, function() return state[side].id end,
             function(item) state[side] = item; updateTrade(true) end)
     end
-    view.preview = text(card, tradeText(), 8, 116, 484, 18, 11, C.pale)
+    view.preview = text(card, tradeText(), 8, 119, 484, 18, 11, C.pale)
     view.preview.TextXAlignment = Enum.TextXAlignment.Center
     table.insert(tradeViews, view)
     return card
@@ -335,12 +339,12 @@ local function createSettingsControls(parent, y)
     return row
 end
 local function createActions(parent, y)
-    local row = frame(parent, 0, y, 500, 42, C.bg, 1)
+    local row = frame(parent, 0, y, 500, 44, C.bg, 1)
     row.Name = "ActionsRow"
     make("UIListLayout", row, {FillDirection = Enum.FillDirection.Horizontal,
         SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0.024, 0)})
-    local start = createButton(row, "▶  ЗАПУСТИТЬ", 0, 0, 244, 42, true)
-    local stop = createButton(row, "■  ОСТАНОВИТЬ", 256, 0, 244, 42)
+    local start = createButton(row, "▶  ЗАПУСТИТЬ", 0, 0, 244, 44, true)
+    local stop = createButton(row, "■  ОСТАНОВИТЬ", 256, 0, 244, 44)
     start.Size = UDim2.fromScale(0.488, 1); stop.Size = UDim2.fromScale(0.488, 1)
     start.LayoutOrder = 1; stop.LayoutOrder = 2
     stroke(stop, C.red, 0.5)
@@ -493,12 +497,17 @@ local function switchPage(id)
     for name, page in pairs(pages) do page.Visible = name == id end
     for name, entry in pairs(navButtons) do
         local selected = name == id
-        entry.gradient.Enabled = selected
         entry.stroke.Color = selected and C.pink or C.line
-        entry.stroke.Transparency = selected and 0.24 or 0.64
+        entry.stroke.Transparency = selected and 0.48 or 0.88
+        for _, primitive in ipairs(entry.iconParts) do
+            animate(primitive, {BackgroundColor3 = selected and C.pale or C.muted})
+        end
+        for _, outline in ipairs(entry.iconStrokes) do
+            animate(outline, {Color = selected and C.pale or C.muted})
+        end
         entry.button:SetAttribute("GlassSelected", selected)
         animate(entry.button, {BackgroundColor3 = selected and C.magenta or C.glass,
-            BackgroundTransparency = selected and 0.42 or 0.68})
+            BackgroundTransparency = selected and 0.64 or 0.86})
     end
     local page = pages[id]
     page.CanvasPosition = Vector2.zero
@@ -506,13 +515,13 @@ local function switchPage(id)
     animate(page, {Position = UDim2.fromOffset(0, 0), ScrollBarImageTransparency = 0.1})
 end
 local function createAnimePanel()
-    -- Landscape canvas matches the original art; keep the face and both
-    -- inscriptions in their source positions, with only breathing overscan.
+    -- Keep the new composition static: no crop, global zoom or text drift.
+    -- Breathing is a local shoulder-light pulse; hair is a separate optional layer.
     anime = make("Frame", window, {Name = "AnimeBackground", Size = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true,
         Active = false, ZIndex = Z.background})
     backgroundImage = make("ImageLabel", anime, {Name = "AnimeArt", AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(1.004, 1.004),
+        Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1, Image = ANIME_IMAGE_ID or "", ImageTransparency = 0,
         Visible = ANIME_IMAGE_ID ~= nil,
         ScaleType = Enum.ScaleType.Fit, Active = false, Selectable = false, ZIndex = Z.background})
@@ -522,22 +531,35 @@ local function createAnimePanel()
         Size = UDim2.fromScale(0.67, 1), BackgroundColor3 = C.bg, BorderSizePixel = 0,
         Active = false, ZIndex = Z.lighting})
     shadeGradient = gradient(backgroundShade, C.bg, C.bg)
-    local glow = make("Frame", window, {Name = "CharacterLight", Position = UDim2.fromScale(0.02, 0.1),
-        Size = UDim2.fromScale(0.32, 0.82), BackgroundColor3 = C.magenta,
-        BackgroundTransparency = 0.965, BorderSizePixel = 0, Active = false, ZIndex = Z.lighting})
+    local glow = make("Frame", window, {Name = "CharacterLight", Position = UDim2.fromScale(0.23, 0.49),
+        Size = UDim2.fromScale(0.16, 0.36), BackgroundColor3 = C.magenta,
+        BackgroundTransparency = 0.992, BorderSizePixel = 0, Active = false, ZIndex = Z.lighting})
     corners(glow, 120)
     local lightGradient = gradient(glow, C.magenta, C.pink, 35)
     lightGradient.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 1),
         NumberSequenceKeypoint.new(0.5, 0.4), NumberSequenceKeypoint.new(1, 1)})
     petalLayer = make("Frame", window, {Name = "SakuraLayer", Size = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true, Active = false, ZIndex = Z.petals})
-    table.insert(ambientTweens, TweenService:Create(backgroundImage,
-        TweenInfo.new(5.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-        {Position = UDim2.new(0.5, 0, 0.5, 2), Size = UDim2.fromScale(1.010, 1.010)}))
     table.insert(ambientTweens, TweenService:Create(glow,
-        TweenInfo.new(4.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-        {BackgroundTransparency = 0.945}))
-    for _, t in ipairs(ambientTweens) do t:Play() end
+        TweenInfo.new(2.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        {BackgroundTransparency = 0.983, Size = UDim2.fromScale(0.16064, 0.36144),
+            Position = UDim2.new(0.23, 0, 0.49, 2)}))
+    hairOverlay = make("ImageLabel", anime, {Name = "HairOverlay", AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1, Image = HAIR_OVERLAY_IMAGE, ImageTransparency = 0.25,
+        Visible = HAIR_OVERLAY_IMAGE ~= "", ScaleType = Enum.ScaleType.Fit,
+        Active = false, Selectable = false, ZIndex = Z.lighting})
+    make("UIAspectRatioConstraint", hairOverlay, {AspectRatio = ART_ASPECT,
+        AspectType = Enum.AspectType.FitWithinMaxSize})
+    -- The prepared hair tween is intentionally not played without an asset.
+    -- fit() caps the displacement at 1.5 actual screen pixels at every scale.
+    hairTween = TweenService:Create(hairOverlay,
+        TweenInfo.new(5.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        {Position = UDim2.new(0.5, 1.5, 0.5, 0.5)})
+    table.insert(ambientTweens, hairTween)
+    for _, t in ipairs(ambientTweens) do
+        if t ~= hairTween or hairOverlay.Visible then t:Play() end
+    end
 end
 local function removePetal(object)
     local entry = activePetals[object]
@@ -548,21 +570,21 @@ local function removePetal(object)
     object:Destroy()
 end
 local function spawnPetal()
-    if not alive or minimized or petalCount >= 18 then return end
+    if not alive or minimized or petalCount >= 8 then return end
     local startX = random:NextNumber() < 0.25 and random:NextNumber(0.04, 0.20) or -0.025
     local startY = random:NextNumber(0.02, 0.90)
     local endY = startY + random:NextNumber(0.04, 0.15)
-    local width, height = random:NextInteger(5, 9), random:NextInteger(9, 16)
+    local width, height = random:NextInteger(2, 3), random:NextInteger(5, 8)
     local object = make("Frame", petalLayer, {Name = "SakuraPetal", AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.fromScale(startX, startY), Size = UDim2.fromOffset(width, height),
         BackgroundColor3 = C.pale:Lerp(C.pink, random:NextNumber(0.05, 0.45)),
-        BackgroundTransparency = random:NextNumber(0.28, 0.55), Rotation = random:NextNumber(-100, 100),
+        BackgroundTransparency = random:NextNumber(0.80, 0.92), Rotation = random:NextNumber(-100, 100),
         BorderSizePixel = 0, Active = false, ZIndex = Z.petals})
     make("UICorner", object, {CornerRadius = UDim.new(0.7, 0)})
     local entry = {connections = {}}
     activePetals[object] = entry; petalCount += 1
     local duration = random:NextNumber(8.5, 12.5)
-    local rotation = object.Rotation + random:NextNumber(150, 400)
+    local rotation = object.Rotation + random:NextNumber(30, 70)
     local function segment(position, angle, second)
         if not alive or not activePetals[object] then return end
         entry.tween = TweenService:Create(object,
@@ -582,7 +604,7 @@ end
 local function schedulePetal()
     if not alive or minimized or particleThread then return end
     -- One cancellable scheduled task for the whole system, no per-frame loops.
-    particleThread = task.delay(random:NextNumber(0.60, 0.95), function()
+    particleThread = task.delay(random:NextNumber(1.4, 2.2), function()
         particleThread = nil
         if not alive or minimized then return end
         spawnPetal(); schedulePetal()
@@ -593,24 +615,85 @@ local function setAtmospherePaused(paused)
     local lighting = window:FindFirstChild("CharacterLight")
     if lighting then lighting.Visible = not paused end
     if particleThread then task.cancel(particleThread); particleThread = nil end
-    for _, t in ipairs(ambientTweens) do if paused then t:Pause() else t:Play() end end
+    for _, t in ipairs(ambientTweens) do
+        if paused then t:Pause()
+        elseif t ~= hairTween or hairOverlay.Visible then t:Play() end
+    end
     for _, entry in pairs(activePetals) do if paused then entry.tween:Pause() else entry.tween:Play() end end
     if not paused then schedulePetal() end
 end
+-- Resolution-independent line icons made from passive UI primitives, not
+-- emoji or external icon assets (so they also work in executor environments).
+local function createNavigationIcon(button, id)
+    local icon = make("Frame", button, {Name = "Icon", AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(24, 24),
+        BackgroundTransparency = 1, Active = false, ZIndex = Z.control})
+    local parts, outlines = {}, {}
+    local function line(x1, y1, x2, y2)
+        local dx, dy = x2 - x1, y2 - y1
+        local object = make("Frame", icon, {AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromOffset((x1 + x2) / 2, (y1 + y2) / 2),
+            Size = UDim2.fromOffset(math.sqrt(dx * dx + dy * dy), 1.6),
+            Rotation = math.deg(math.atan2(dy, dx)), BackgroundColor3 = C.muted,
+            BorderSizePixel = 0, Active = false, ZIndex = Z.control})
+        corners(object, 1); table.insert(parts, object)
+    end
+    local function ring(x, y, diameter)
+        local object = make("Frame", icon, {Position = UDim2.fromOffset(x, y),
+            Size = UDim2.fromOffset(diameter, diameter), BackgroundTransparency = 1,
+            BorderSizePixel = 0, Active = false, ZIndex = Z.control})
+        corners(object, diameter / 2)
+        table.insert(outlines, stroke(object, C.muted, 0.08, 1.6))
+    end
+    if id == "home" then
+        line(3, 11, 12, 3); line(12, 3, 21, 11)
+        line(5, 10, 5, 21); line(19, 10, 19, 21)
+        line(5, 21, 9, 21); line(15, 21, 19, 21)
+        line(9, 21, 9, 15); line(9, 15, 15, 15); line(15, 15, 15, 21)
+    elseif id == "trade" then
+        line(3, 7, 21, 7); line(17, 3, 21, 7); line(21, 7, 17, 11)
+        line(21, 17, 3, 17); line(7, 13, 3, 17); line(3, 17, 7, 21)
+    elseif id == "items" then
+        line(12, 2, 21, 7); line(21, 7, 21, 17); line(21, 17, 12, 22)
+        line(12, 22, 3, 17); line(3, 17, 3, 7); line(3, 7, 12, 2)
+        line(3, 7, 12, 12); line(12, 12, 21, 7); line(12, 12, 12, 22)
+    elseif id == "settings" then
+        ring(5, 5, 14); ring(10, 10, 4)
+        for i = 0, 7 do
+            local angle = i * math.pi / 4
+            line(12 + math.cos(angle) * 7, 12 + math.sin(angle) * 7,
+                12 + math.cos(angle) * 10, 12 + math.sin(angle) * 10)
+        end
+    elseif id == "stats" then
+        line(3, 21, 21, 21)
+        for i, height in ipairs({7, 12, 17}) do
+            local x = 4 + (i - 1) * 6
+            line(x, 19, x, 19 - height); line(x, 19 - height, x + 3, 19 - height)
+            line(x + 3, 19 - height, x + 3, 19)
+        end
+    else
+        ring(2, 2, 20); line(12, 11, 12, 18); line(11.5, 7, 12.5, 7)
+    end
+    return parts, outlines
+end
 local function createSidebar()
-    sidebar = frame(body, 0, 0, 176, 234, C.bg, 1)
-    sidebar.Name = "Sidebar"
-    make("UIPadding", sidebar, {PaddingLeft = UDim.new(0, 2), PaddingRight = UDim.new(0, 2)})
+    sidebar = frame(body, 0, 0, RAIL.width, RAIL.height, C.bg, 1)
+    sidebar.Name = "IconRail"
+    make("UISizeConstraint", sidebar, {MinSize = Vector2.new(RAIL.width, RAIL.height),
+        MaxSize = Vector2.new(RAIL.width, RAIL.height)})
+    make("UIPadding", sidebar, {PaddingLeft = UDim.new(0, 3), PaddingRight = UDim.new(0, 3)})
     navLayout = make("UIGridLayout", sidebar, {SortOrder = Enum.SortOrder.LayoutOrder,
-        CellPadding = UDim2.fromOffset(0, 6), CellSize = UDim2.new(1, -4, 0, 34), FillDirectionMaxCells = 1})
-    for i, entry in ipairs({{"home", "⌂  Главная"}, {"trade", "⇄  Авто Трейд"}, {"items", "◇  Предметы"},
-        {"settings", "⚙  Настройки"}, {"stats", "▥  Статистика"}, {"info", "ⓘ  Инфо"}}) do
-        local b = createButton(sidebar, entry[2], 0, (i - 1) * 40, 176, 34)
-        b.LayoutOrder = i; b.TextSize = 13; b.BackgroundTransparency = 0.68
+        CellPadding = UDim2.fromOffset(0, RAIL.gap), CellSize = UDim2.fromOffset(RAIL.button, RAIL.button),
+        FillDirectionMaxCells = 1})
+    for i, id in ipairs({"home", "trade", "items", "settings", "stats", "info"}) do
+        local b = createButton(sidebar, "", 0, (i - 1) * (RAIL.button + RAIL.gap), RAIL.button, RAIL.button)
+        b.Name = id; b.LayoutOrder = i; b.BackgroundTransparency = 0.86
         b:SetAttribute("CompactNavigation", true)
-        local g = gradient(b, Color3.fromRGB(255, 220, 241), Color3.fromRGB(186, 146, 186)); g.Enabled = false
-        navButtons[entry[1]] = {button = b, gradient = g, stroke = b:FindFirstChildOfClass("UIStroke")}
-        connect(b.Activated, function() switchPage(entry[1]) end)
+        b:FindFirstChildOfClass("UICorner").CornerRadius = UDim.new(0, 9)
+        local parts, outlines = createNavigationIcon(b, id)
+        navButtons[id] = {button = b, iconParts = parts, iconStrokes = outlines,
+            stroke = b:FindFirstChildOfClass("UIStroke")}
+        connect(b.Activated, function() switchPage(id) end)
     end
 end
 local viewport = Vector2.new(900, 530)
@@ -639,21 +722,36 @@ local function fit(center)
     body.Position = UDim2.fromScale(0, 0)
     body.Size = UDim2.fromScale(1, 1)
     anime.Position = UDim2.fromScale(0, 0)
+    for _, t in ipairs(ambientTweens) do t:Cancel() end
+    local light = window:FindFirstChild("CharacterLight")
+    light.Position = UDim2.fromScale(0.23, 0.49)
+    light.Size = UDim2.fromScale(0.16, 0.36)
+    light.BackgroundTransparency = 0.992
+    ambientTweens[1] = TweenService:Create(light,
+        TweenInfo.new(2.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        {BackgroundTransparency = 0.983, Size = UDim2.fromScale(0.16064, 0.36144),
+            Position = UDim2.new(0.23, 0, 0.49, 2 / uiScale.Scale)})
+    hairOverlay.Position = UDim2.fromScale(0.5, 0.5)
+    hairTween = TweenService:Create(hairOverlay,
+        TweenInfo.new(5.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        {Position = UDim2.new(0.5, 1.5 / uiScale.Scale, 0.5, 0.5 / uiScale.Scale)})
+    ambientTweens[2] = hairTween
+    if not minimized then
+        ambientTweens[1]:Play()
+        if hairOverlay.Visible then hairTween:Play() end
+    end
     backgroundImage.ImageTransparency = portrait and 0.55 or 0
     backgroundShade.Position = UDim2.fromScale(portrait and 0 or WORK.left, portrait and 0 or WORK.top)
     backgroundShade.Size = UDim2.fromScale(portrait and 1 or WORK.width, portrait and 1 or WORK.height)
     shadeGradient.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, portrait and 0.72 or 0.98),
         NumberSequenceKeypoint.new(0.5, portrait and 0.70 or 0.94), NumberSequenceKeypoint.new(1, portrait and 0.65 or 0.90)})
-    sidebar.Position = portrait and UDim2.fromOffset(14, 78) or UDim2.fromScale(0.018, 0.17)
-    sidebar.Size = portrait and UDim2.fromOffset(508, 92) or UDim2.new(0.15, 0, 0, 234)
-    navLayout.FillDirectionMaxCells = portrait and 3 or 1
-    navLayout.CellSize = portrait and UDim2.new(1 / 3, -6, 0, 40) or UDim2.new(1, -4, 0, 34)
-    navLayout.CellPadding = portrait and UDim2.fromOffset(6, 6) or UDim2.fromOffset(0, 6)
-    local availableWidth = portrait and 500 or W * WORK.width
-    local availableHeight = portrait and 530 or H * WORK.height
+    sidebar.Position = portrait and UDim2.fromOffset(12, 86) or UDim2.fromScale(0.016, 0.17)
+    sidebar.Size = UDim2.fromOffset(RAIL.width, RAIL.height)
+    local availableWidth = portrait and 452 or W * WORK.width
+    local availableHeight = portrait and 612 or H * WORK.height
     -- Fit the entire 500x438 dashboard to BOTH axes, including START/STOP.
     contentScale.Scale = math.min(availableWidth / 500, availableHeight / 438)
-    pageHost.Position = portrait and UDim2.fromOffset(18, 180) or UDim2.new(WORK.left, 0, WORK.top, 0)
+    pageHost.Position = portrait and UDim2.fromOffset(72, 86) or UDim2.new(WORK.left, 0, WORK.top, 0)
     pageHost.Size = UDim2.fromOffset(500, availableHeight / contentScale.Scale)
     closeDropdown(); sliderInput = nil
     if center then place((viewport - Vector2.new(W, H) * uiScale.Scale) / 2)
@@ -715,13 +813,13 @@ local function createMainWindow()
     -- Connect before starting effects, so rerun also cleans a partial build.
     connect(gui.Destroying, cleanup)
     window = frame(gui, 0, 0, W, H, C.bg, 0.07)
-    window.Name = "Window"; corners(window, 12); stroke(window, C.pink, 0.1)
+    window.Name = "Window"; corners(window, 12); stroke(window, C.pink, 0.48)
     window.ClipsDescendants = true
     uiScale = make("UIScale", window, {Scale = 1})
     for i = 1, 3 do
         local glow = frame(window, -i * 2, -i * 2, W + i * 4, H + i * 4, C.bg, 1)
         glow.Size = UDim2.new(1, i * 4, 1, i * 4)
-        corners(glow, 12 + i * 2); stroke(glow, C.pink, 0.88 + i * 0.025, 2)
+        corners(glow, 12 + i * 2); stroke(glow, C.pink, 0.96 + i * 0.012, 2)
         glow.ZIndex = Z.decoration
     end
     body = frame(window, 0, 0, W, H, C.bg, 1)
@@ -729,7 +827,7 @@ local function createMainWindow()
     createAnimePanel(); createSidebar()
     pageHost = frame(body, 0, 0, 500, 438, C.bg, 1)
     pageHost.Name = "Workspace"
-    make("UISizeConstraint", pageHost, {MinSize = Vector2.new(500, 438), MaxSize = Vector2.new(500, 600)})
+    make("UISizeConstraint", pageHost, {MinSize = Vector2.new(500, 438), MaxSize = Vector2.new(500, 700)})
     contentScale = make("UIScale", pageHost, {Scale = 1})
     popupLayer = frame(window, 0, 0, W, H, C.bg, 1)
     popupLayer.Size = UDim2.fromScale(1, 1); popupLayer.ZIndex = 50; popupLayer.Visible = false
@@ -744,7 +842,7 @@ local function createHeader()
         BackgroundColor3 = C.pink, BackgroundTransparency = 0.78, BorderSizePixel = 0,
         Active = false, ZIndex = Z.decoration})
     text(header, "✿", 16, 14, 30, 38, 26, C.pink)
-    local title = text(header, 'Takizawa<font color="#FF6FBB">_swaga</font>', 54, 12, 310, 28, 22)
+    local title = text(header, 'Takizawa<font color="#C27797">_swaga</font>', 54, 12, 310, 28, 22)
     title.RichText = true; title.Font = Enum.Font.GothamBold
     text(header, "ADOPT ME • TRADE BOT", 56, 42, 280, 18, 10, C.muted)
     local minimize = createButton(header, "−", 0, 16, 38, 36)
@@ -783,7 +881,7 @@ local function watchCamera()
 end
 connect(workspace:GetPropertyChangedSignal("CurrentCamera"), watchCamera)
 watchCamera(); fit(true)
-for _ = 1, 8 do spawnPetal() end
+for _ = 1, 3 do spawnPetal() end
 schedulePetal()
 local lastSecond = -1
 connect(RunService.Heartbeat, function(delta)
