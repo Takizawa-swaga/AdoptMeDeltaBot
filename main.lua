@@ -63,7 +63,12 @@ local statLabels, tradeViews, settingViews, statusViews, timerViews = {}, {}, {}
 local logs, logLabels = {}, {}
 local schemeSummaries = {}
 local gui, window, body, header, sidebar, anime, pageHost, uiScale, contentScale, popupLayer
-local W, H, portrait = 900, 530, false
+-- Composition coordinates refer to the unchanged 1890x832 assets/anime.png.
+local ART_ASPECT = 1890 / 832
+local LANDSCAPE_HEIGHT = 600
+local WORK = {left = 0.625, top = 0.15, width = 0.352, height = 0.71}
+local W, H, portrait = LANDSCAPE_HEIGHT * ART_ASPECT, LANDSCAPE_HEIGHT, false
+local navLayout
 local activePage = "home"
 local cameraConnection, dropdownClose, dropdownAnchor, listRefresh
 local backgroundImage, backgroundShade, shadeGradient, petalLayer
@@ -127,7 +132,8 @@ local function createButton(parent, value, x, y, width, height, bright, scope)
     if bright then gradient(b, C.pink, C.magenta, 25) end
     local function appearance(hover, pressed)
         local selected = b:GetAttribute("GlassSelected") == true
-        local opacity = selected and 0.22 or transparency
+        local resting = b:GetAttribute("CompactNavigation") and 0.68 or transparency
+        local opacity = selected and (b:GetAttribute("CompactNavigation") and 0.42 or 0.22) or resting
         animate(b, {BackgroundColor3 = (bright or selected) and C.magenta or (hover and Color3.fromRGB(43, 20, 37) or base),
             BackgroundTransparency = opacity - (pressed and 0.08 or hover and 0.04 or 0),
             TextTransparency = pressed and 0.12 or 0})
@@ -145,13 +151,14 @@ local function createButton(parent, value, x, y, width, height, bright, scope)
     return b
 end
 local function createCard(parent, title, x, y, width, height)
-    local card = frame(parent, x, y, width, height, C.glass, 0.40)
+    local card = frame(parent, x, y, width, height, C.glass, 0.28)
+    card.Name = title
     corners(card); stroke(card, C.pink, 0.70)
     -- UIGradient multiplies the surface colour: use light tint stops rather
     -- than multiplying dark glass by another near-black gradient.
     gradient(card, Color3.fromRGB(246, 210, 232), Color3.fromRGB(188, 172, 198), 70)
     text(card, title, 12, 8, width - 24, 22, 13, C.pale)
-    frame(card, 10, 34, width - 20, 1, C.line, 0.4).ZIndex = Z.decoration
+    frame(card, 10, 28, width - 20, 1, C.line, 0.4).ZIndex = Z.decoration
     return card
 end
 local function closeDropdown()
@@ -258,20 +265,20 @@ local function bindDropdown(button, options, selected, callback)
     end)
 end
 local function createProposal(parent, y)
-    local card = createCard(parent, "ПРЕДЛОЖЕНИЕ", 0, y, 500, 164)
-    text(card, "Я отдаю", 12, 40, 210, 22, 13, C.muted)
-    text(card, "Я получаю", 278, 40, 210, 22, 13, C.muted)
-    local give = createButton(card, "", 12, 66, 210, 38)
-    local want = createButton(card, "", 278, 66, 210, 38)
-    local arrow = text(card, "⇄", 226, 68, 48, 36, 30, C.pink)
+    local card = createCard(parent, "ПРЕДЛОЖЕНИЕ", 0, y, 500, 136)
+    text(card, "Я отдаю", 12, 30, 210, 20, 13, C.muted)
+    text(card, "Я получаю", 278, 30, 210, 20, 13, C.muted)
+    local give = createButton(card, "", 12, 52, 210, 30)
+    local want = createButton(card, "", 278, 52, 210, 30)
+    local arrow = text(card, "⇄", 226, 50, 48, 34, 30, C.pink)
     arrow.TextXAlignment = Enum.TextXAlignment.Center
     local view = {give = give, want = want}
     for _, side in ipairs({"give", "want"}) do
         local x = side == "give" and 12 or 278
-        local minus = createButton(card, "−", x, 110, 54, 34)
-        view[side .. "Quantity"] = text(card, "1", x + 60, 110, 90, 34, 16)
+        local minus = createButton(card, "−", x, 88, 54, 26)
+        view[side .. "Quantity"] = text(card, "1", x + 60, 88, 90, 26, 16)
         view[side .. "Quantity"].TextXAlignment = Enum.TextXAlignment.Center
-        local plus = createButton(card, "+", x + 156, 110, 54, 34)
+        local plus = createButton(card, "+", x + 156, 88, 54, 26)
         connect(minus.Activated, function()
             state[side .. "Quantity"] = math.max(1, state[side .. "Quantity"] - 1); updateTrade(true)
         end)
@@ -281,9 +288,10 @@ local function createProposal(parent, y)
         bindDropdown(view[side], ITEMS, function() return state[side].id end,
             function(item) state[side] = item; updateTrade(true) end)
     end
-    view.preview = text(parent, tradeText(), 8, y + 167, 484, 22, 12, C.pale)
+    view.preview = text(card, tradeText(), 8, 116, 484, 18, 11, C.pale)
     view.preview.TextXAlignment = Enum.TextXAlignment.Center
     table.insert(tradeViews, view)
+    return card
 end
 local sliderInput, sliderTrack
 local function updateSettings()
@@ -296,18 +304,20 @@ local function updateSettings()
     end
 end
 local function createSettingsControls(parent, y)
-    local delay = createCard(parent, "ЗАДЕРЖКА МЕЖДУ ТРЕЙДАМИ", 0, y, 260, 90)
-    local track = frame(delay, 16, 59, 170, 5, C.line)
+    local row = frame(parent, 0, y, 500, 78, C.bg, 1)
+    row.Name = "SettingsRow"
+    local delay = createCard(row, "ЗАДЕРЖКА МЕЖДУ ТРЕЙДАМИ", 0, 0, 260, 78)
+    local track = frame(delay, 16, 53, 170, 5, C.line)
     corners(track, 4)
     local fill = frame(track, 0, 0, 0, 5, C.pink); corners(fill, 4)
     local knob = frame(track, 0, -5, 16, 16, C.pink); corners(knob, 16)
     local hit = make("TextButton", track, {Position = UDim2.fromOffset(-8, -17), Size = UDim2.new(1, 16, 0, 40),
         BackgroundTransparency = 1, Text = "", AutoButtonColor = false})
-    local value = text(delay, "", 200, 45, 55, 32, 14, C.pink)
-    local mode = createCard(parent, "РЕЖИМ", 272, y, 228, 90)
-    local modeButton = createButton(mode, "", 10, 43, 90, 34)
+    local value = text(delay, "", 200, 39, 55, 32, 14, C.pink)
+    local mode = createCard(row, "РЕЖИМ", 272, 0, 228, 78)
+    local modeButton = createButton(mode, "", 10, 37, 90, 32)
     modeButton.TextSize = 11
-    local repeatButton = createButton(mode, "", 106, 43, 114, 34)
+    local repeatButton = createButton(mode, "", 106, 37, 114, 32)
     repeatButton.TextSize = 10
     table.insert(settingViews, {fill = fill, knob = knob, value = value, mode = modeButton, repeatButton = repeatButton})
     local function slide(input)
@@ -322,21 +332,30 @@ local function createSettingsControls(parent, y)
     connect(repeatButton.Activated, function() state.repeatTrades = not state.repeatTrades; updateSettings() end)
     bindDropdown(modeButton, {{id = "normal", name = "Обычный"}}, function() return "normal" end,
         function(option) state.mode = option.name; updateSettings() end)
+    return row
 end
 local function createActions(parent, y)
-    local start = createButton(parent, "▶  ЗАПУСТИТЬ", 0, y, 244, 42, true)
-    local stop = createButton(parent, "■  ОСТАНОВИТЬ", 256, y, 244, 42)
+    local row = frame(parent, 0, y, 500, 42, C.bg, 1)
+    row.Name = "ActionsRow"
+    make("UIListLayout", row, {FillDirection = Enum.FillDirection.Horizontal,
+        SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0.024, 0)})
+    local start = createButton(row, "▶  ЗАПУСТИТЬ", 0, 0, 244, 42, true)
+    local stop = createButton(row, "■  ОСТАНОВИТЬ", 256, 0, 244, 42)
+    start.Size = UDim2.fromScale(0.488, 1); stop.Size = UDim2.fromScale(0.488, 1)
+    start.LayoutOrder = 1; stop.LayoutOrder = 2
     stroke(stop, C.red, 0.5)
     table.insert(startButtons, start)
     connect(start.Activated, function() setRunning(true) end)
     connect(stop.Activated, function() setRunning(false) end)
+    return row
 end
 local function createStatus(parent, y)
-    local card = createCard(parent, "СТАТУС", 0, y, 500, 65)
-    local dot = frame(card, 14, 43, 10, 10, C.green); corners(dot, 10)
-    local value = text(card, "Готов к работе", 32, 36, 320, 26, 15, C.green)
-    local timer = text(card, "00:00:00", 388, 36, 100, 26, 14, C.pink)
+    local card = createCard(parent, "СТАТУС", 0, y, 500, 52)
+    local dot = frame(card, 14, 36, 8, 8, C.green); corners(dot, 10)
+    local value = text(card, "Готов к работе", 32, 29, 320, 22, 14, C.green)
+    local timer = text(card, "00:00:00", 388, 29, 100, 22, 13, C.pink)
     table.insert(statusViews, {label = value, dot = dot}); table.insert(timerViews, timer)
+    return card
 end
 local function createPage(id)
     local page = make("ScrollingFrame", pageHost, {Name = id, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
@@ -347,15 +366,21 @@ local function createPage(id)
 end
 local function createHomePage()
     local page = createPage("home")
-    page.CanvasSize = UDim2.fromOffset(0, 540)
-    createStatus(page, 0); createProposal(page, 76)
-    local card = createCard(page, "СПИСОК ПЕТОВ", 0, 274, 500, 92)
-    local summary = text(card, "", 12, 40, 242, 44, 12, C.pale)
+    page.CanvasSize = UDim2.fromOffset(0, 0)
+    page.ScrollingEnabled = false; page.ScrollBarThickness = 0
+    make("UIPadding", page, {PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 8)})
+    make("UIListLayout", page, {SortOrder = Enum.SortOrder.LayoutOrder,
+        FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, 6)})
+    createStatus(page, 0).LayoutOrder = 1
+    createProposal(page, 58).LayoutOrder = 2
+    local card = createCard(page, "СПИСОК ПЕТОВ", 0, 200, 500, 76)
+    card.LayoutOrder = 3
+    local summary = text(card, "", 12, 32, 242, 36, 12, C.pale)
     summary.TextTruncate = Enum.TextTruncate.None
     table.insert(schemeSummaries, summary)
-    local add = createButton(card, "+", 276, 44, 62, 34)
-    local remove = createButton(card, "−", 348, 44, 62, 34)
-    local clear = createButton(card, "Очистить", 420, 44, 68, 34)
+    local add = createButton(card, "+", 276, 35, 62, 30)
+    local remove = createButton(card, "−", 348, 35, 62, 30)
+    local clear = createButton(card, "Очистить", 420, 35, 68, 30)
     clear.TextSize = 11
     connect(add.Activated, function()
         if #state.schemes >= 100 then return end
@@ -367,7 +392,8 @@ local function createHomePage()
         if state.selected then table.remove(state.schemes, state.selected); state.selected = nil; listRefresh() end
     end)
     connect(clear.Activated, function() table.clear(state.schemes); state.selected = nil; listRefresh() end)
-    createSettingsControls(page, 378); createActions(page, 482)
+    createSettingsControls(page, 282).LayoutOrder = 4
+    createActions(page, 366).LayoutOrder = 5
 end
 local function createAutoTradePage()
     local page = createPage("trade")
@@ -472,7 +498,7 @@ local function switchPage(id)
         entry.stroke.Transparency = selected and 0.24 or 0.64
         entry.button:SetAttribute("GlassSelected", selected)
         animate(entry.button, {BackgroundColor3 = selected and C.magenta or C.glass,
-            BackgroundTransparency = selected and 0.22 or 0.40})
+            BackgroundTransparency = selected and 0.42 or 0.68})
     end
     local page = pages[id]
     page.CanvasPosition = Vector2.zero
@@ -480,8 +506,8 @@ local function switchPage(id)
     animate(page, {Position = UDim2.fromOffset(0, 0), ScrollBarImageTransparency = 0.1})
 end
 local function createAnimePanel()
-    -- Whole-window 16:9 art. Fit retains the character at the left edge;
-    -- the small breathing overscan cannot crop any meaningful part of it.
+    -- Landscape canvas matches the original art; keep the face and both
+    -- inscriptions in their source positions, with only breathing overscan.
     anime = make("Frame", window, {Name = "AnimeBackground", Size = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true,
         Active = false, ZIndex = Z.background})
@@ -490,6 +516,8 @@ local function createAnimePanel()
         BackgroundTransparency = 1, Image = ANIME_IMAGE_ID or "", ImageTransparency = 0,
         Visible = ANIME_IMAGE_ID ~= nil,
         ScaleType = Enum.ScaleType.Fit, Active = false, Selectable = false, ZIndex = Z.background})
+    make("UIAspectRatioConstraint", backgroundImage, {AspectRatio = ART_ASPECT,
+        AspectType = Enum.AspectType.FitWithinMaxSize})
     backgroundShade = make("Frame", window, {Name = "RightShade", Position = UDim2.fromScale(0.33, 0),
         Size = UDim2.fromScale(0.67, 1), BackgroundColor3 = C.bg, BorderSizePixel = 0,
         Active = false, ZIndex = Z.lighting})
@@ -570,11 +598,16 @@ local function setAtmospherePaused(paused)
     if not paused then schedulePetal() end
 end
 local function createSidebar()
-    sidebar = frame(body, 12, 10, 176, 330, C.bg, 1)
+    sidebar = frame(body, 0, 0, 176, 234, C.bg, 1)
+    sidebar.Name = "Sidebar"
+    make("UIPadding", sidebar, {PaddingLeft = UDim.new(0, 2), PaddingRight = UDim.new(0, 2)})
+    navLayout = make("UIGridLayout", sidebar, {SortOrder = Enum.SortOrder.LayoutOrder,
+        CellPadding = UDim2.fromOffset(0, 6), CellSize = UDim2.new(1, -4, 0, 34), FillDirectionMaxCells = 1})
     for i, entry in ipairs({{"home", "⌂  Главная"}, {"trade", "⇄  Авто Трейд"}, {"items", "◇  Предметы"},
         {"settings", "⚙  Настройки"}, {"stats", "▥  Статистика"}, {"info", "ⓘ  Инфо"}}) do
-        local b = createButton(sidebar, entry[2], 0, (i - 1) * 52, 176, 44)
-        b.TextSize = 15
+        local b = createButton(sidebar, entry[2], 0, (i - 1) * 40, 176, 34)
+        b.LayoutOrder = i; b.TextSize = 13; b.BackgroundTransparency = 0.68
+        b:SetAttribute("CompactNavigation", true)
         local g = gradient(b, Color3.fromRGB(255, 220, 241), Color3.fromRGB(186, 146, 186)); g.Enabled = false
         navButtons[entry[1]] = {button = b, gradient = g, stroke = b:FindFirstChildOfClass("UIStroke")}
         connect(b.Activated, function() switchPage(entry[1]) end)
@@ -599,37 +632,29 @@ local function fit(center)
         W, H = 536, 722
         uiScale.Scale = math.min(1, (viewport.X - 20) / W, (viewport.Y - 20) / H)
     else
-        -- Derive the canvas from BOTH viewport axes; no fixed desktop-size cap.
-        H = 530
-        uiScale.Scale = viewport.Y * 0.92 / H
-        W = viewport.X * 0.94 / uiScale.Scale
+        H = LANDSCAPE_HEIGHT; W = H * ART_ASPECT
+        uiScale.Scale = math.min(viewport.X * 0.94 / W, viewport.Y * 0.92 / H)
     end
     window.Size = UDim2.fromOffset(W, minimized and 72 or H)
-    local padding = portrait and 14 or math.clamp(W * 0.014, 10, 16)
-    body.Position = UDim2.fromOffset(padding, 78)
-    body.Size = UDim2.fromOffset(W - padding * 2, H - 86)
-    -- Shift the existing full-window art slightly right, without changing its
-    -- aspect ratio or breathing tween; sidebar stays to the left of both eyes.
-    anime.Position = UDim2.fromScale(portrait and 0 or 0.03, 0)
+    body.Position = UDim2.fromScale(0, 0)
+    body.Size = UDim2.fromScale(1, 1)
+    anime.Position = UDim2.fromScale(0, 0)
     backgroundImage.ImageTransparency = portrait and 0.55 or 0
-    backgroundShade.Position = UDim2.fromScale(portrait and 0 or 0.465, 0)
-    backgroundShade.Size = UDim2.fromScale(portrait and 1 or 0.535, 1)
-    shadeGradient.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, portrait and 0.72 or 1),
-        NumberSequenceKeypoint.new(0.5, portrait and 0.70 or 0.96), NumberSequenceKeypoint.new(1, portrait and 0.65 or 0.85)})
-    local sidebarWidth = portrait and 508 or W * 0.175
-    local navHeight = math.min(math.max(44, 32 / uiScale.Scale), (H - 102) / 6 - 8)
-    sidebar.Position = UDim2.fromOffset(0, portrait and 0 or 10)
-    sidebar.Size = UDim2.fromOffset(sidebarWidth, portrait and 98 or H - 96)
-    local order = {"home", "trade", "items", "settings", "stats", "info"}
-    for i, id in ipairs(order) do
-        navButtons[id].button.Position = portrait and UDim2.fromOffset(((i - 1) % 3) * 170, math.floor((i - 1) / 3) * 48) or UDim2.fromOffset(0, (i - 1) * (navHeight + 8))
-        navButtons[id].button.Size = UDim2.fromOffset(portrait and 162 or sidebarWidth, portrait and 40 or navHeight)
-    end
-    local contentLeft = W * 0.465
-    local contentWidth = W - contentLeft - padding * 2
-    contentScale.Scale = portrait and 1 or contentWidth / 500
-    pageHost.Position = UDim2.fromOffset(portrait and 4 or contentLeft - padding, portrait and 104 or 0)
-    pageHost.Size = UDim2.fromOffset(500, portrait and 522 or (H - 86) / contentScale.Scale)
+    backgroundShade.Position = UDim2.fromScale(portrait and 0 or WORK.left, portrait and 0 or WORK.top)
+    backgroundShade.Size = UDim2.fromScale(portrait and 1 or WORK.width, portrait and 1 or WORK.height)
+    shadeGradient.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, portrait and 0.72 or 0.98),
+        NumberSequenceKeypoint.new(0.5, portrait and 0.70 or 0.94), NumberSequenceKeypoint.new(1, portrait and 0.65 or 0.90)})
+    sidebar.Position = portrait and UDim2.fromOffset(14, 78) or UDim2.fromScale(0.018, 0.17)
+    sidebar.Size = portrait and UDim2.fromOffset(508, 92) or UDim2.new(0.15, 0, 0, 234)
+    navLayout.FillDirectionMaxCells = portrait and 3 or 1
+    navLayout.CellSize = portrait and UDim2.new(1 / 3, -6, 0, 40) or UDim2.new(1, -4, 0, 34)
+    navLayout.CellPadding = portrait and UDim2.fromOffset(6, 6) or UDim2.fromOffset(0, 6)
+    local availableWidth = portrait and 500 or W * WORK.width
+    local availableHeight = portrait and 530 or H * WORK.height
+    -- Fit the entire 500x438 dashboard to BOTH axes, including START/STOP.
+    contentScale.Scale = math.min(availableWidth / 500, availableHeight / 438)
+    pageHost.Position = portrait and UDim2.fromOffset(18, 180) or UDim2.new(WORK.left, 0, WORK.top, 0)
+    pageHost.Size = UDim2.fromOffset(500, availableHeight / contentScale.Scale)
     closeDropdown(); sliderInput = nil
     if center then place((viewport - Vector2.new(W, H) * uiScale.Scale) / 2)
     else place(Vector2.new(window.Position.X.Offset, window.Position.Y.Offset)) end
@@ -699,9 +724,12 @@ local function createMainWindow()
         corners(glow, 12 + i * 2); stroke(glow, C.pink, 0.88 + i * 0.025, 2)
         glow.ZIndex = Z.decoration
     end
-    body = frame(window, 14, 78, W - 28, H - 86, C.bg, 1)
+    body = frame(window, 0, 0, W, H, C.bg, 1)
+    body.Name = "DashboardBody"
     createAnimePanel(); createSidebar()
-    pageHost = frame(body, 372, 0, 500, 438, C.bg, 1)
+    pageHost = frame(body, 0, 0, 500, 438, C.bg, 1)
+    pageHost.Name = "Workspace"
+    make("UISizeConstraint", pageHost, {MinSize = Vector2.new(500, 438), MaxSize = Vector2.new(500, 600)})
     contentScale = make("UIScale", pageHost, {Scale = 1})
     popupLayer = frame(window, 0, 0, W, H, C.bg, 1)
     popupLayer.Size = UDim2.fromScale(1, 1); popupLayer.ZIndex = 50; popupLayer.Visible = false
@@ -715,10 +743,10 @@ local function createHeader()
     make("Frame", header, {Position = UDim2.new(0, 14, 1, -1), Size = UDim2.new(1, -28, 0, 1),
         BackgroundColor3 = C.pink, BackgroundTransparency = 0.78, BorderSizePixel = 0,
         Active = false, ZIndex = Z.decoration})
-    text(header, "✿", 16, 12, 38, 42, 31, C.pink)
-    local title = text(header, 'Takizawa<font color="#FF6FBB">_swaga</font>', 62, 10, 370, 34, 26)
+    text(header, "✿", 16, 14, 30, 38, 26, C.pink)
+    local title = text(header, 'Takizawa<font color="#FF6FBB">_swaga</font>', 54, 12, 310, 28, 22)
     title.RichText = true; title.Font = Enum.Font.GothamBold
-    text(header, "ADOPT ME • TRADE BOT", 64, 44, 310, 18, 12, C.muted)
+    text(header, "ADOPT ME • TRADE BOT", 56, 42, 280, 18, 10, C.muted)
     local minimize = createButton(header, "−", 0, 16, 38, 36)
     minimize.Name = "Minimize"; minimize.Position = UDim2.new(1, -94, 0, 16)
     local close = createButton(header, "×", 0, 16, 38, 36)
