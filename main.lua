@@ -948,9 +948,16 @@ do
         while o do if o == ancestor then return true end; o = o.Parent end
         return false
     end
+    local function isOwnGui(o)
+        while o do
+            if o == gui or o.Name == GUI_NAME then return true end
+            o = o.Parent
+        end
+        return false
+    end
     local function enabledTree(o)
         while o do
-            if o == gui or o.Name == GUI_NAME then return false end
+            if isOwnGui(o) then return false end
             if is(o, "GuiObject") and not o.Visible then return false end
             if is(o, "ScreenGui") and read(o, "Enabled") == false then return false end
             o = o.Parent
@@ -966,7 +973,7 @@ do
         if not o or not o.Parent then return false end
         local node = o
         while node do
-            if node == gui or node.Name == GUI_NAME then return false end
+            if isOwnGui(node) then return false end
             if is(node, "GuiObject") and not node.Visible then return false end
             if is(node, "ScreenGui") and read(node, "Enabled") == false then return false end
             node = node.Parent
@@ -981,7 +988,7 @@ do
         local out, stack = {}, {root}
         while #stack > 0 and #out < TradeConfig.MaxNodes do
             local o = table.remove(stack)
-            if o ~= gui and o.Name ~= GUI_NAME then
+            if not isOwnGui(o) then
                 if not visibleOnly or enabledTree(o) then
                     table.insert(out, o)
                     for _, child in ipairs(o:GetChildren()) do table.insert(stack, child) end
@@ -1802,31 +1809,107 @@ do
             print("[TEXT] " .. message); addLog("TEXT", message)
         end
     end
-    local function liveAction(card)
+    local function liveClickLog(message)
+        print("[LIVE CLICK] " .. message); addLog("LIVE CLICK", message)
+    end
+    local function insidePoint(point, o)
+        if not is(o, "GuiObject") then return false end
+        local p, s = o.AbsolutePosition, o.AbsoluteSize
+        return point.X >= p.X and point.Y >= p.Y and point.X < p.X+s.X and point.Y < p.Y+s.Y
+    end
+    local function liveForbidden(o)
+        if exact(o, {"make offer", "submit offer", "confirm", "okay", "ok", "yes", "accept", "cancel", "close", "add", "+", "remove"}) then return true end
+        for _, value in ipairs(words(o)) do
+            for _, denied in ipairs({"confirm", "make offer", "submit", "cancel", "close", "remove", "accept", "okay", "delete", "add item", "inventory"}) do
+                if value:find(denied,1,true) then return true end
+            end
+        end
+        return false
+    end
+    local function liveTargetInfo(o, card, verbose)
+        local point = o.AbsolutePosition + o.AbsoluteSize / 2
+        local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize
+        local clipped, template = false, false
+        local parent = o
+        while parent do
+            if norm(parent.Name):find("template", 1, true) then template = true end
+            if is(parent, "GuiObject") and parent.ClipsDescendants and not insidePoint(point, parent) then clipped = true end
+            parent = parent.Parent
+        end
+        if verbose then
+            liveClickLog("target = " .. path(o))
+            liveClickLog("class = " .. tostring(o.ClassName))
+            liveClickLog("visible = " .. tostring(shown(o)))
+            liveClickLog("active = " .. tostring(read(o, "Active")))
+            liveClickLog(string.format("absolutePosition = %.1f,%.1f", o.AbsolutePosition.X, o.AbsolutePosition.Y))
+            liveClickLog(string.format("absoluteSize = %.1f,%.1f", o.AbsoluteSize.X, o.AbsoluteSize.Y))
+            liveClickLog(string.format("center = %.1f,%.1f", point.X, point.Y))
+            liveClickLog("clipped = " .. tostring(clipped) .. " template = " .. tostring(template))
+            parent = o.Parent
+            for level = 1, 4 do
+                if not parent then break end
+                local p, s = read(parent, "AbsolutePosition"), read(parent, "AbsoluteSize")
+                liveClickLog(string.format("Parent %d %s class=%s Visible=%s AbsolutePosition=%s AbsoluteSize=%s ClipsDescendants=%s",
+                    level, path(parent), tostring(parent.ClassName), tostring(read(parent, "Visible")),
+                    p and string.format("%.1f,%.1f", p.X,p.Y) or "n/a", s and string.format("%.1f,%.1f", s.X,s.Y) or "n/a",
+                    tostring(read(parent, "ClipsDescendants"))))
+                parent = parent.Parent
+            end
+        end
+        if isOwnGui(o) or not shown(o) or not button(o) or read(o, "Active") == false or read(o, "Interactable") == false then
+            return nil, "hidden/own/non-interactable target"
+        end
+        if not shown(card) or not within(o, card) or not insidePoint(point, card) then return nil, "target outside visible card" end
+        if template or clipped then return nil, template and "template target" or "target clipped" end
+        if not viewport or point.X < 0 or point.Y < 0 or point.X >= viewport.X or point.Y >= viewport.Y then
+            return nil, "center outside viewport"
+        end
+        if liveForbidden(o) then
+            return nil, "final/confirmation/non-opening action blocked"
+        end
+        return point
+    end
+    local function liveActions(card, verbose)
         local candidates = {}
         for _, o in ipairs(walk(card, true)) do
-            if shown(o) and button(o) and read(o, "Active") ~= false and read(o, "Interactable") ~= false then
-                local excluded = exact(o, {"make offer", "submit offer", "confirm", "okay", "ok", "yes", "accept", "cancel", "close", "add", "+", "remove"})
-                if not excluded then
-                    local opening = exact(o, {"send offer", "open listing", "view listing", "open", "view", "offer"})
-                    -- Unnamed icon buttons are usable only with verified repeated-card context.
-                    table.insert(candidates, {instance = o, score = opening and 0.96 or 0.84,
-                        reasons = {opening and "visible listing action" or "button in repeated listing row"}})
+            if button(o) and not isOwnGui(o) then
+                local point = liveTargetInfo(o, card, false)
+                local name = norm(o.Name)
+                local opening = exact(o, {"send offer", "open listing", "view listing", "open", "view", "offer"})
+                local area = o.AbsoluteSize.X * o.AbsoluteSize.Y
+                local decorative = name:find("remove",1,true) or name:find("close",1,true) or name:find("decoration",1,true)
+                local smallIcon = not opening and norm(read(o,"Text")) == "" and area < card.AbsoluteSize.X*card.AbsoluteSize.Y*0.025
+                if point and not decorative and not smallIcon and (o == card or not itemName(o)) then
+                    local center = card.AbsolutePosition + card.AbsoluteSize / 2
+                    local distance = (point.X-center.X)^2 + (point.Y-center.Y)^2
+                    table.insert(candidates, {instance=o, score=opening and 0.96 or 0.84,
+                        area=area, distance=distance, opening=opening, cardButton=o==card,
+                        reasons={"visible bounded card opening button"}})
                 end
             end
         end
-        table.sort(candidates, function(a, b)
-            if a.score ~= b.score then return a.score > b.score end
-            if a.instance.AbsolutePosition.Y ~= b.instance.AbsolutePosition.Y then
-                return a.instance.AbsolutePosition.Y < b.instance.AbsolutePosition.Y
-            end
-            return a.instance.AbsolutePosition.X < b.instance.AbsolutePosition.X
+        table.sort(candidates, function(a,b)
+            if a.cardButton ~= b.cardButton then return a.cardButton end
+            if a.opening ~= b.opening then return a.opening end
+            if a.area ~= b.area then return a.area > b.area end
+            if a.distance ~= b.distance then return a.distance < b.distance end
+            return path(a.instance) < path(b.instance)
         end)
-        if #candidates > 1 and candidates[1].score == candidates[2].score then
-            return nil -- do not guess between several unlabeled item/action icons
+        if verbose then
+            liveClickLog("Card = " .. path(card))
+            liveClickLog("Candidate buttons = " .. #candidates)
+            for i, candidate in ipairs(candidates) do
+                if i > 12 then break end
+                liveClickLog(string.format("Candidate %d %s area=%.0f distance=%.1f opening=%s",i,path(candidate.instance),candidate.area,math.sqrt(candidate.distance),tostring(candidate.opening)))
+            end
+            liveClickLog("Selected clickable = " .. (candidates[1] and path(candidates[1].instance) or "none"))
         end
-        return candidates[1]
+        return candidates
     end
+    local function liveAction(card)
+        return liveActions(card, false)[1]
+    end
+
     local function liveContainers(root)
         local best, bestCards, bestScore
         for _, container in ipairs(walk(root, true)) do
@@ -1917,26 +2000,6 @@ do
         for _, o in ipairs(walk(root, true)) do if shown(o) then visible[o] = true end end
         return visible
     end
-    local function liveHit(target, playerGui)
-        local o = target.instance
-        if not shown(o) then return false end
-        local point = o.AbsolutePosition + o.AbsoluteSize / 2
-        local view = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize
-        if not view or point.X < 0 or point.Y < 0 or point.X >= view.X or point.Y >= view.Y then return false end
-        local parent = o.Parent
-        while parent do
-            if is(parent, "GuiObject") and parent.ClipsDescendants then
-                local p, s = parent.AbsolutePosition, parent.AbsoluteSize
-                if point.X < p.X or point.Y < p.Y or point.X >= p.X+s.X or point.Y >= p.Y+s.Y then return false end
-            end
-            parent = parent.Parent
-        end
-        local enabled = gui.Enabled; gui.Enabled = false
-        local ok, hits = pcall(function() return playerGui:GetGuiObjectsAtPosition(point.X, point.Y) end)
-        gui.Enabled = enabled
-        local top = ok and hits[1]
-        return top and (within(top, o) or within(o, top)) or false
-    end
     local function liveOpened(root, before, container, hub)
         local hubScreen = hub
         while hubScreen and not is(hubScreen, "ScreenGui") do hubScreen = hubScreen.Parent end
@@ -1988,6 +2051,141 @@ do
         end
         if self.liveCard then children(self.liveCard.root, 1) end
     end
+    function Controller:restoreLiveClick()
+        local click = self.liveClick
+        if not click then return end
+        -- Release only an outstanding press on STOP; never start another action.
+        if click.pressed and self.input then
+            pcall(function()
+                if click.method == "selected-key" then self.input:SendKey(false, Enum.KeyCode.Return, false)
+                else self.input:SendMouseButton(click.point, Enum.UserInputType.MouseButton1, false, 0) end
+            end)
+            click.pressed = false
+        end
+        if click.selectionSaved then pcall(function() click.guiService.SelectedObject = click.oldSelection end); click.selectionSaved = false end
+        if click.hidden then
+            pcall(function() gui.Enabled = click.oldEnabled end)
+            liveClickLog("Takizawa restored; temporarilyHidden=true")
+            click.hidden = false
+        end
+    end
+    function Controller:clickGuiObject(target)
+        if not self:active() then return false, "STOP/cancellation" end
+        self.liveCard.action = target
+        local point, reason = liveTargetInfo(target.instance, self.liveCard.root, true)
+        if not point or target.score < TradeConfig.MinConfidence then return false, reason or "low confidence" end
+        if not self.input then
+            local ok, input = pcall(function() return UIS:CreateVirtualInput() end)
+            if not ok or not input then
+                liveClickLog("VirtualInput unavailable: " .. tostring(input))
+                return false, "VirtualInput unavailable; no protected-input fallback"
+            end
+            self.input = input
+        end
+        local overlap = gui.Enabled ~= false and window.Visible and insidePoint(point, window)
+        local ok, hits = pcall(function() return self.playerGui:GetGuiObjectsAtPosition(point.X, point.Y) end)
+        if ok then for _, hit in ipairs(hits) do if isOwnGui(hit) then overlap = true end end end
+        local click = {target=target, point=point, phase="settle", method=self.liveMethods[self.liveMethodIndex],
+            oldEnabled=gui.Enabled, hidden=overlap, wasHidden=overlap}
+        self.liveClick = click
+        self.liveReasons = self.liveReasons or {}
+        liveClickLog("input strategy = " .. click.method .. " temporarilyHidden=" .. tostring(overlap))
+        if overlap then gui.Enabled = false end
+        -- Give Roblox one UI update before checking the input hit target.
+        self:setState("OPENING LISTING")
+        self:schedule(overlap and 0.15 or 0)
+        return true
+    end
+    function Controller:liveClickFailure(reason)
+        liveClickLog("Strategy failed: " .. tostring(reason))
+        table.insert(self.liveReasons, tostring(reason):sub(1,180))
+        self:restoreLiveClick()
+        self.liveMethodIndex += 1
+        if self.liveMethodIndex > #self.liveMethods then
+            self.liveMethodIndex = 1; self.liveTargetIndex += 1
+        end
+        if os.clock() >= self.deadline or self.liveTargetIndex > math.min(2,#self.liveTargets) then
+            self:liveClickDump(); liveTextDump(self.playerGui)
+            liveClickLog("Attempt summary = " .. table.concat(self.liveReasons," | "))
+            self:liveFinish("ERROR: CLICK FAILED", "Listing click failed: strategies exhausted; see LIVE CLICK summary")
+            return
+        end
+        -- First verify once more: a delayed first click must not trigger another strategy.
+        self.liveClick = {phase="retry",reason=reason}
+        self:schedule(0)
+    end
+    function Controller:advanceLiveClick()
+        if not self:active() then self:restoreLiveClick(); return end
+        local opened = liveOpened(self.playerGui, self.liveBefore, self.liveContainer, self.hub.instance)
+        local click = self.liveClick
+        if opened and (not click or not click.pressed) then
+            self:restoreLiveClick()
+            liveLog("Opened GUI: " .. path(opened)); liveLog("OFFER WINDOW OPENED")
+            self:liveFinish("LISTING OPENED"); return
+        end
+        if not click then self:liveClickFailure("missing click state"); return end
+        if click.phase == "retry" then
+            local target = self.liveTargets[self.liveTargetIndex]
+            local ok, reason = self:clickGuiObject(target)
+            if not ok then self:liveClickFailure(reason) end
+            return
+        end
+        if click.phase == "settle" then
+            local point, reason = liveTargetInfo(click.target.instance, self.liveCard.root, false)
+            if not point then self:liveClickFailure(reason); return end
+            -- A resize/movement while waiting uses fresh bounds, never stale coordinates.
+            click.point = point
+            local okHit, hits = pcall(function() return self.playerGui:GetGuiObjectsAtPosition(point.X, point.Y) end)
+            local top = okHit and hits[1]
+            liveClickLog("Hit target = " .. (top and path(top) or "none"))
+            if not top or isOwnGui(top) or not within(top, click.target.instance) then
+                self:liveClickFailure("target occluded/hit-test mismatch"); return
+            end
+            if B.findOfferDialog(self.playerGui) then self:liveClickFailure("unexpected offer dialog before press"); return end
+            local ok, err = pcall(function()
+                if click.method == "selected-key" then
+                    if read(click.target.instance,"Selectable") ~= true then error("target not Selectable") end
+                    if UIS:GetFocusedTextBox() then error("TextBox has focus; keyboard activation blocked") end
+                    local service = game:GetService("GuiService")
+                    click.guiService = service; click.oldSelection = service.SelectedObject; click.selectionSaved = true
+                    service.SelectedObject = click.target.instance
+                    if service.SelectedObject ~= click.target.instance then error("GUI selection not accepted") end
+                    click.pressed = true; self.input:SendKey(true,Enum.KeyCode.Return,false)
+                else
+                    if click.method == "pointer-mouse" then self.input:SendMousePosition(point) end
+                    click.pressed = true
+                    self.input:SendMouseButton(point,Enum.UserInputType.MouseButton1,true,0)
+                end
+            end)
+            liveClickLog("Down API accepted=" .. tostring(ok) .. (ok and "" or " error=" .. tostring(err)))
+            if not ok then self:liveClickFailure(err); return end
+            click.phase = "release"; self:schedule(click.method == "position-mouse" and 0.10 or 0.05)
+        elseif click.phase == "release" then
+            local ok, err = pcall(function()
+                if click.method == "selected-key" then self.input:SendKey(false,Enum.KeyCode.Return,false)
+                else self.input:SendMouseButton(click.point,Enum.UserInputType.MouseButton1,false,0) end
+            end)
+            if ok then click.pressed = false end
+            self:restoreLiveClick()
+            liveClickLog("Up API accepted=" .. tostring(ok) .. (ok and "" or " error=" .. tostring(err)))
+            if not ok then self:liveClickFailure(err); return end
+            click.phase="verify"; click.responseDeadline=os.clock()+0.45
+            self:schedule(0)
+        elseif click.phase == "verify" then
+            if os.clock() >= click.responseDeadline or os.clock() >= self.deadline then
+                local changes, nodes = 0, walk(self.playerGui,true)
+                for _, o in ipairs(nodes) do
+                    if shown(o) and not self.liveBefore[o] then
+                        changes += 1
+                        if changes <= 20 then liveClickLog("Post-click visible GUI: " .. path(o) .. " Text=" .. tostring(read(o,"Text") or "")) end
+                    end
+                end
+                liveClickLog("Post-click new visible instances=" .. changes .. "; offer window not verified")
+                self:liveClickFailure("no new offer/listing window after " .. click.method)
+            else self:schedule(0.10) end
+        else self:liveClickFailure("unknown click phase") end
+    end
+
     function Controller:liveTradeLoop()
         if not self:active() then return end
         if self.currentState == "SEARCHING TRADE HUB" then
@@ -2017,7 +2215,7 @@ do
             end
             -- Select the first row with an opening action; never inventory/final controls.
             for _, card in ipairs(self.liveCards) do
-                if liveHit(card.action, self.playerGui) then self.liveCard = card; break end
+                if liveTargetInfo(card.action.instance, card.root, false) then self.liveCard = card; break end
             end
             if not self.liveCard then
                 self.liveCard = self.liveCards[1]; self:liveClickDump()
@@ -2027,27 +2225,17 @@ do
             liveLog("Selected listing: " .. path(self.liveCard.root))
             liveLog("Texts:")
             for _, entry in ipairs(visibleTexts(self.liveCard.root, 30)) do liveLog(entry.text) end
+            self.liveTargets = liveActions(self.liveCard.root, true)
             self.liveBefore = liveSnapshot(self.playerGui)
-            liveLog("Input method: UserInputService:CreateVirtualInput / SendMouseButton")
-            local ok, reason = self:click(self.liveCard.action, "open live listing")
-            if not ok then
-                self:liveClickDump()
-                self:liveFinish("ERROR: CLICK FAILED", "Listing click failed: " .. tostring(reason))
-                return
-            end
-            self:setState("OPENING LISTING")
+            self.liveMethods = {"pointer-mouse", "position-mouse", "selected-key"}
+            self.liveReasons = {}
+            self.liveTargetIndex = 1; self.liveMethodIndex = 1
             self.deadline = os.clock() + 5
-            self:schedule(0)
+            self:setState("OPENING LISTING")
+            local ok, reason = self:clickGuiObject(self.liveTargets[1])
+            if not ok then self:liveClickFailure(reason) end
         elseif self.currentState == "OPENING LISTING" then
-            local opened = liveOpened(self.playerGui, self.liveBefore, self.liveContainer, self.hub.instance)
-            if opened then
-                liveLog("Opened GUI: " .. path(opened))
-                liveLog("OFFER WINDOW OPENED")
-                self:liveFinish("LISTING OPENED")
-            elseif os.clock() >= self.deadline then
-                self:liveClickDump(); liveTextDump(self.playerGui)
-                self:liveFinish("ERROR: CLICK FAILED", "Listing click failed: no new visible offer/listing window within 5s")
-            else self:schedule(TradeConfig.PollInterval) end
+            self:advanceLiveClick()
         else self:liveFinish("ERROR: CLICK FAILED", "Unexpected live-test state: " .. tostring(self.currentState)) end
     end
 
@@ -2072,6 +2260,8 @@ do
     end
     function Controller:stopTradeBot()
         self.running = false
+        self:restoreLiveClick()
+        self.liveClick = nil; self.liveTargets = nil
         self.liveBefore = nil; self.liveCards = nil; self.liveContainer = nil; self.liveCard = nil
         if self.pending then task.cancel(self.pending); self.pending = nil end
         disconnect(self.connections)
