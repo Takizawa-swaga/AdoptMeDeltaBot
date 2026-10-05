@@ -1,4 +1,4 @@
--- Takizawa_swaga / AdoptMeDeltaBot. GUI only: no Trade Hub actions.
+-- Takizawa_swaga / AdoptMeDeltaBot. Resolver-driven client GUI Auto Trade; Dry Run by default.
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
@@ -53,6 +53,16 @@ local C = {
     muted = Color3.fromRGB(173, 149, 178), line = Color3.fromRGB(91, 62, 91),
     green = Color3.fromRGB(73, 221, 117), red = Color3.fromRGB(255, 101, 129),
 }
+-- Live submit requires BOTH DryRun=false and the existing mode selector set to Auto.
+local TradeConfig = {
+    DryRun = true, Debug = false, MinConfidence = 0.80, AmbiguityMargin = 0.06,
+    ScanInterval = 1.5, ActionDelay = 0.12, PollInterval = 0.15,
+    DialogTimeout = 4, InventoryTimeout = 4, ResultTimeout = 6, ListingCooldown = 120,
+    MaxNodes = 2500, MaxCards = 80, MaxAncestors = 8, MaxDumpLines = 180, MaxOfferQuantity = 9, MaxProcessed = 500,
+    -- Verified image URI -> item name mapping, populated only from known game evidence.
+    ItemImages = {},
+}
+local TradeBackend = {}
 local state = {running = false, give = ITEMS[1], want = ITEMS[2], giveQuantity = 1,
     wantQuantity = 1, delay = 3, mode = "Обычный", repeatTrades = true, elapsed = 0,
     schemes = {}, selected = nil, generation = 0}
@@ -204,7 +214,7 @@ local function incrementSent() increment("sent") end
 local function incrementSuccess() increment("success") end
 local function incrementInvalid() increment("invalid") end
 local function incrementErrors() increment("errors") end
--- Future Trader may call the four counters above. No actions are attached yet.
+-- Backend result handlers update these existing counters.
 local function setStatus(value, color)
     for _, view in ipairs(statusViews) do
         view.label.Text = value; animate(view.label, {TextColor3 = color})
@@ -212,20 +222,26 @@ local function setStatus(value, color)
     end
 end
 local startButtons = {}
-local function setRunning(running)
+local setRunning
+setRunning = function(running)
     if running and state.running then return end
     closeDropdown()
     if running and (not state.give or not state.want or state.giveQuantity < 1 or state.wantQuantity < 1) then
         incrementErrors(); setStatus("Ошибка", C.red); addLog("Error", "Некорректное предложение"); return
     end
     state.running = running
-    state.generation += 1 -- Future async work must check this cancellation token.
+    state.generation += 1 -- Backend actions must check this cancellation token.
     for _, b in ipairs(startButtons) do
         b.Active = not running
         animate(b, {TextTransparency = running and 0.5 or 0, BackgroundTransparency = running and 0.22 or 0.15})
     end
-    setStatus(running and "Работает" or "Остановлен", running and C.green or C.red)
-    addLog("Bot", running and "Started — GUI only" or "Stopped")
+    if running then
+        if not TradeBackend.startTradeBot() then setRunning(false) end
+    else
+        TradeBackend.stopTradeBot()
+        setStatus("STOPPED", C.red)
+        addLog("BOT", "Stopped; pending trade actions cancelled")
+    end
 end
 local function createDropdown(anchor, options, selected, onSelect)
     dropdownAnchor = anchor
@@ -338,7 +354,7 @@ local function createSettingsControls(parent, y)
         end
     end)
     connect(repeatButton.Activated, function() state.repeatTrades = not state.repeatTrades; updateSettings() end)
-    bindDropdown(modeButton, {{id = "normal", name = "Обычный"}}, function() return "normal" end,
+    bindDropdown(modeButton, {{id = "normal", name = "Обычный"}, {id = "dry", name = "Dry Run"}, {id = "manual", name = "Manual"}, {id = "auto", name = "Auto"}}, function() return ({["Обычный"] = "normal", ["Dry Run"] = "dry", ["Manual"] = "manual", ["Auto"] = "auto"})[state.mode] end,
         function(option) state.mode = option.name; updateSettings() end)
     return row
 end
@@ -406,8 +422,8 @@ end
 local function createAutoTradePage()
     local page = createPage("trade")
     createStatus(page, 0); createProposal(page, 76); createActions(page, 274)
-    local card = createCard(page, "GUI PROTOTYPE", 0, 330, 500, 94)
-    local note = text(card, "START управляет только состоянием интерфейса.\nПредложения не отправляются. Trade Hub будет подключён позже.", 12, 43, 476, 42, 13, C.muted)
+    local card = createCard(page, "AUTO TRADE", 0, 330, 500, 94)
+    local note = text(card, "Dry Run включён по умолчанию: финальная отправка заблокирована.\nБот использует только доступный GUI и проверяет каждое действие.", 12, 43, 476, 42, 13, C.muted)
     note.TextWrapped = true; note.TextTruncate = Enum.TextTruncate.None
 end
 local rowScope, rowObjects = {}, {}
@@ -467,7 +483,7 @@ local function createSettingsPage()
     local page = createPage("settings")
     createSettingsControls(page, 0)
     local card = createCard(page, "НАСТРОЙКИ ИНТЕРФЕЙСА", 0, 106, 500, 130)
-    local note = text(card, "Перетаскивайте окно за верхнюю панель.\nМасштаб автоматически подстраивается под экран.\nЗадержка и режим сохранены в текущей сессии для будущего Trader.", 12, 44, 476, 72, 14, C.muted)
+    local note = text(card, "Перетаскивайте окно за верхнюю панель.\nМасштаб автоматически подстраивается под экран.\nLive: config DryRun=false + режим Auto. Обычный = Dry Run.", 12, 44, 476, 72, 14, C.muted)
     note.TextWrapped = true; note.TextTruncate = Enum.TextTruncate.None
 end
 local function createStatsPage()
@@ -485,7 +501,7 @@ end
 local function createInfoPage()
     local page = createPage("info")
     local card = createCard(page, "TAKIZAWA_SWAGA • ADOPT ME", 0, 0, 500, 130)
-    local note = text(card, "Mobile GUI prototype\nSTART / STOP управляют состоянием GUI.\nAnime asset можно подключить через ANIME_IMAGE_ID.\nНастоящая Trade Hub автоматизация ещё не реализована.", 12, 42, 476, 78, 13, C.muted)
+    local note = text(card, "Resolver-driven Auto Trade\nSTART / STOP управляют торговым контроллером.\nDry Run включён по умолчанию.\nПри неизвестном GUI отправка блокируется; доступен diagnostic dump.", 12, 42, 476, 78, 13, C.muted)
     note.TextWrapped = true; note.TextTruncate = Enum.TextTruncate.None
     local logCard = createCard(page, "ЖУРНАЛ • ПОСЛЕДНИЕ 80 СТРОК", 0, 144, 500, 280)
     local scroll = make("ScrollingFrame", logCard, {Position = UDim2.fromOffset(8, 42), Size = UDim2.fromOffset(484, 228),
@@ -805,6 +821,7 @@ end
 local function cleanup()
     if not alive then return end
     alive = false; state.running = false; state.generation += 1
+    TradeBackend.cleanupTradeBot()
     stopNavPulse()
     if particleThread then task.cancel(particleThread); particleThread = nil end
     for _, t in ipairs(ambientTweens) do t:Cancel() end
@@ -907,6 +924,901 @@ local function createHeader()
     end)
     connect(UIS.WindowFocusReleased, function() dragInput = nil; sliderInput = nil; sliderTrack = nil end)
 end
+-- BEGIN TRADE BACKEND: client GUI only; no remotes or connection firing.
+do
+    local B = TradeBackend
+    local function norm(value)
+        return tostring(value or ""):gsub("<[^>]*>", ""):gsub("(%l)(%u)", "%1 %2"):gsub("_", " "):lower():gsub("%s+", " "):match("^%s*(.-)%s*$")
+    end
+    B.normalize = norm
+    local function read(o, key)
+        local ok, value = pcall(function() return o[key] end)
+        if ok then return value end
+    end
+    local function attr(o, key)
+        local ok, value = pcall(function() return o:GetAttribute(key) end)
+        if ok then return value end
+    end
+    local function is(o, class)
+        return o and o:IsA(class)
+    end
+    local function within(o, ancestor)
+        while o do if o == ancestor then return true end; o = o.Parent end
+        return false
+    end
+    local function enabledTree(o)
+        while o do
+            if o == gui or o.Name == GUI_NAME then return false end
+            if is(o, "GuiObject") and not o.Visible then return false end
+            if is(o, "ScreenGui") and read(o, "Enabled") == false then return false end
+            o = o.Parent
+        end
+        return true
+    end
+    local function path(o)
+        local parts = {}
+        while o do table.insert(parts, 1, o.Name); o = o.Parent end
+        return table.concat(parts, ".")
+    end
+    local function shown(o)
+        if not o or not o.Parent then return false end
+        local node = o
+        while node do
+            if node == gui or node.Name == GUI_NAME then return false end
+            if is(node, "GuiObject") and not node.Visible then return false end
+            if is(node, "ScreenGui") and read(node, "Enabled") == false then return false end
+            node = node.Parent
+        end
+        if is(o, "GuiObject") then
+            local size = o.AbsoluteSize
+            return size.X > 0 and size.Y > 0
+        end
+        return true
+    end
+    local function walk(root, visibleOnly)
+        local out, stack = {}, {root}
+        while #stack > 0 and #out < TradeConfig.MaxNodes do
+            local o = table.remove(stack)
+            if o ~= gui and o.Name ~= GUI_NAME then
+                if not visibleOnly or enabledTree(o) then
+                    table.insert(out, o)
+                    for _, child in ipairs(o:GetChildren()) do table.insert(stack, child) end
+                end
+            end
+        end
+        return out, #stack > 0
+    end
+    local function words(o)
+        local texts = {norm(o.Name)}
+        if is(o, "TextLabel") or is(o, "TextButton") or is(o, "TextBox") then table.insert(texts, norm(o.Text)) end
+        for _, child in ipairs(o:GetChildren()) do
+            if shown(child) and (is(child, "TextLabel") or is(child, "TextButton")) then table.insert(texts, norm(child.Text)) end
+        end
+        return texts
+    end
+    local function exact(o, choices)
+        for _, value in ipairs(words(o)) do
+            for _, choice in ipairs(choices) do
+                if value == choice or value:gsub("%s", "") == choice:gsub("%s", "") then return true end
+            end
+        end
+        return false
+    end
+    local function button(o)
+        return is(o, "TextButton") or is(o, "ImageButton")
+    end
+    local function resolve(root, choices, predicate)
+        local candidates = {}
+        local nodes, truncated = walk(root, true)
+        if truncated then return nil, "action scan budget exceeded" end
+        for _, o in ipairs(nodes) do
+            if button(o) and (not predicate or predicate(o)) and exact(o, choices) then
+                local explicit = is(o, "TextButton") and norm(o.Text) ~= "" and exact({
+                    Name = "", Text = o.Text, IsA = function(_, c) return c == "TextButton" end,
+                    GetChildren = function() return {} end,
+                }, choices)
+                table.insert(candidates, {instance = o, score = explicit and 0.96 or 0.84,
+                    reasons = {explicit and "exact visible action text" or "exact action name + verified context"}})
+            end
+        end
+        table.sort(candidates, function(a, b) return a.score > b.score end)
+        if #candidates == 0 then return nil, "target missing" end
+        if #candidates > 1 and candidates[1].score - candidates[2].score < TradeConfig.AmbiguityMargin then
+            return nil, "ambiguous action: " .. #candidates .. " candidates"
+        end
+        return candidates[1]
+    end
+    B.resolve = resolve
+    local function roles(root, dialog)
+        local first, second = {}, {}
+        local left = dialog and {"you give", "your offer", "give items"} or {"you", "wants", "wanted", "looking for", "requested items"}
+        local right = dialog and {"they give", "you receive", "their offer"} or {"them", "offers", "offered", "offered items", "giving"}
+        for _, o in ipairs(walk(root, true)) do
+            if is(o, "Frame") or is(o, "ScrollingFrame") then
+                local a, b = exact(o, left), exact(o, right)
+                if a and not b then table.insert(first, o) elseif b and not a then table.insert(second, o) end
+            end
+        end
+        -- Nested copies of the same side are okay; choose the highest side root.
+        local function top(list)
+            local out = {}
+            for _, o in ipairs(list) do
+                local nested = false
+                for _, other in ipairs(list) do if o ~= other and within(o, other) then nested = true end end
+                if not nested then table.insert(out, o) end
+            end
+            return #out == 1 and out[1] or nil
+        end
+        return top(first), top(second)
+    end
+    B.findSides = roles
+    local function catalog()
+        local names = {}
+        for _, item in ipairs(ITEMS) do names[norm(item.name)] = item.name end
+        if state.give then names[norm(state.give.name)] = state.give.name end
+        if state.want then names[norm(state.want.name)] = state.want.name end
+        return names
+    end
+    local function itemName(o)
+        local names = catalog()
+        for _, key in ipairs({"ItemName", "DisplayName", "PetName"}) do
+            local value = attr(o, key)
+            if value and names[norm(value)] then return names[norm(value)], 0.98 end
+        end
+        for _, value in ipairs(words(o)) do
+            local stripped = value:gsub("%s+[x×]%s*%d+$", ""):gsub("^%d+%s*[x×]%s*", "")
+            if names[stripped] then return names[stripped], 0.94 end
+        end
+        return nil
+    end
+    local function quantity(o)
+        for _, key in ipairs({"Quantity", "Count", "Amount"}) do
+            local n = tonumber(attr(o, key))
+            if n and n >= 1 and n % 1 == 0 then return n end
+        end
+        for _, value in ipairs(words(o)) do
+            local n = tonumber(value:match("[x×]%s*(%d+)$") or value:match("^(%d+)%s*[x×]"))
+            if n then return n end
+        end
+        for _, child in ipairs(o:GetChildren()) do
+            if shown(child) and exact(child, {"quantity", "count", "amount"}) then
+                local n = tonumber(read(child, "Text"))
+                if n and n >= 1 then return n end
+            end
+        end
+        return nil -- never assume that an icon means quantity one
+    end
+    local function images(o)
+        local out = {}
+        for _, child in ipairs(walk(o, true)) do
+            if is(child, "ImageLabel") or is(child, "ImageButton") then
+                local uri = read(child, "Image")
+                if uri and uri ~= "" then table.insert(out, uri) end
+            end
+        end
+        return out
+    end
+    function B.imageKey(o)
+        local uri = read(o, "Image") or ""
+        local size, offset = read(o, "ImageRectSize"), read(o, "ImageRectOffset")
+        if size and (size.X ~= 0 or size.Y ~= 0) then
+            return uri .. "|offset=" .. tostring(offset and offset.X or 0) .. "," .. tostring(offset and offset.Y or 0)
+                .. "|size=" .. tostring(size.X) .. "," .. tostring(size.Y)
+        end
+        return uri
+    end
+    function B.parseItems(root)
+        local result, seen = {}, {}
+        if not root then return result end
+        local nodes, truncated = walk(root, true)
+        if truncated then return {{root = root, unknown = true, confidence = 0}} end
+        for _, o in ipairs(nodes) do
+            if is(o, "GuiObject") then
+                local name, confidence
+                if o ~= root then name, confidence = itemName(o) end
+                if exact(o, {"you", "them", "you give", "they give", "wants", "wanted", "offers", "offered", "inventory", "backpack"}) then name = nil end
+                local tile = o
+                if name and (is(o, "TextLabel") or is(o, "ImageLabel")) and is(o.Parent, "GuiObject") then tile = o.Parent end
+                if not name and (is(o, "ImageLabel") or is(o, "ImageButton")) then
+                    name = TradeConfig.ItemImages[B.imageKey(o)]
+                    if name then confidence = 0.92 end
+                end
+                if name and not seen[tile] then
+                    seen[tile] = true
+                    local icons = images(tile)
+                    local n = quantity(tile)
+                    local action = button(tile) and tile or nil
+                    if not action then
+                        for _, child in ipairs(walk(tile, true)) do
+                            if button(child) and not exact(child, {"remove", "delete", "close", "x", "+", "add"}) then
+                                if action then action = nil; break end
+                                action = child
+                            end
+                        end
+                    end
+                    table.insert(result, {root = tile, name = name, quantity = n, image = icons[1],
+                        images = icons, confidence = n and confidence or 0.60, unknown = n == nil, action = action})
+                elseif not name and (is(o, "ImageLabel") or is(o, "ImageButton")) and read(o, "Image") ~= ""
+                    and (norm(o.Name):find("item", 1, true) or norm(o.Name):find("pet", 1, true) or norm(o.Parent.Name):find("slot", 1, true))
+                    and not exact(o, {"add", "add item", "plus", "remove", "close"}) then
+                    -- Preserve uninterpreted icon evidence for diagnostics, not matching.
+                    table.insert(result, {root = o, name = nil, quantity = quantity(o), image = read(o, "Image"), unknown = true, confidence = 0})
+                end
+            end
+        end
+        -- Do not count nested label/icon representations twice.
+        local out = {}
+        for _, entry in ipairs(result) do
+            local nested = false
+            for _, other in ipairs(result) do
+                if entry ~= other and other.name and within(entry.root, other.root) and entry.root ~= other.root then nested = true end
+            end
+            if not nested then table.insert(out, entry) end
+        end
+        return out
+    end
+    local function total(items, expected)
+        local count, confidence = 0, 1
+        for _, entry in ipairs(items) do
+            if entry.unknown or not entry.name or not entry.quantity then return nil, 0, "unknown item/quantity" end
+            if norm(entry.name) ~= norm(expected) then return nil, 0, "different/additional item" end
+            count += entry.quantity; confidence = math.min(confidence, entry.confidence)
+        end
+        return count, confidence
+    end
+    function B.parseListing(card)
+        local wants, offers = roles(card, false)
+        local listing = {root = card, wants = B.parseItems(wants), offers = B.parseItems(offers),
+            player = attr(card, "UserId") or attr(card, "PlayerName") or attr(card, "Owner"),
+            id = attr(card, "ListingId"), confidence = 0, visibleText = {}, images = images(card)}
+        for _, o in ipairs(walk(card, true)) do
+            if is(o, "TextLabel") or is(o, "TextButton") then
+                local value = norm(o.Text)
+                table.insert(listing.visibleText, o.Text)
+                listing.id = listing.id or value:match("listing%s*#(%d+)")
+                if not listing.player and (norm(o.Name) == "player" or norm(o.Name) == "username") then listing.player = o.Text end
+            end
+        end
+        listing.action = resolve(card, {"send offer", "open listing", "view listing", "open offer"})
+        listing.unknown = not wants or not offers or #listing.wants == 0 or #listing.offers == 0
+        if not listing.unknown then
+            listing.confidence = 0.94
+            for _, set in ipairs({listing.wants, listing.offers}) do
+                for _, item in ipairs(set) do
+                    listing.confidence = math.min(listing.confidence, item.confidence)
+                    if item.unknown then listing.unknown = true end
+                end
+            end
+        end
+        local function terms(items)
+            local out = {}
+            for _, item in ipairs(items) do
+                table.insert(out, tostring(item.name) .. ":" .. tostring(item.quantity) .. ":" .. table.concat(item.images or {item.image or ""}, ","))
+            end
+            table.sort(out); return table.concat(out, "|")
+        end
+        listing.signature = tostring(listing.player or "unknown owner") .. ":" .. tostring(listing.id)
+            .. ":wants=" .. terms(listing.wants) .. ":offers=" .. terms(listing.offers)
+        -- Timers, hover text and button state must not invalidate duplicate cache.
+        listing.key = tostring(listing.player or "unknown owner") .. ":" .. tostring(listing.id or path(card))
+            .. (listing.id and "" or ":" .. listing.signature)
+        return listing
+    end
+    function B.matchesRules(listing, rules)
+        if listing.unknown or listing.confidence < TradeConfig.MinConfidence then return false, "parser confidence/unknown fields" end
+        local give, gc, why = total(listing.wants, rules.give.name)
+        if give ~= rules.giveQuantity then return false, "wants " .. (why or "different quantity") end
+        local receive, rc, reason = total(listing.offers, rules.want.name)
+        if receive ~= rules.wantQuantity then return false, "offers " .. (reason or "different quantity") end
+        if not listing.action or listing.action.score < TradeConfig.MinConfidence then return false, "no confident action" end
+        return true, math.min(gc, rc, listing.confidence, listing.action.score)
+    end
+    function B.scoreListing(listing, rules)
+        local match, confidence = B.matchesRules(listing, rules)
+        return match and confidence - (listing.player and 0 or 0.02) - (listing.id and 0 or 0.02) or 0
+    end
+    function B.findTradeHubGui(playerGui)
+        local best, runner = nil, nil
+        for _, root in ipairs(playerGui:GetChildren()) do
+            if root ~= gui and root.Name ~= GUI_NAME and shown(root) then
+                local texts, listingContainer = {}, false
+                for _, o in ipairs(walk(root, true)) do
+                    if is(o, "GuiObject") then for _, value in ipairs(words(o)) do texts[value] = true end end
+                    if is(o, "ScrollingFrame") and exact(o, {"listings", "listing results", "search results"}) then listingContainer = true end
+                end
+                local score, reasons = 0, {}
+                if norm(root.Name):find("trade", 1, true) then score += 0.30; table.insert(reasons, "trade root name") end
+                local menu = texts["search listings"] and texts["offers i sent"]
+                local listing = texts["send offer"] and (texts["you"] or texts["wants"] or texts["wanted"])
+                    and (texts["them"] or texts["offers"] or texts["offered"])
+                local dialog = texts["you give"] and texts["they give"]
+                if menu or listing or dialog then score = math.max(score, 0.94); table.insert(reasons, "trade-specific semantic structure") end
+                if listingContainer and norm(root.Name):find("trade", 1, true) then
+                    score = math.max(score, 0.84); table.insert(reasons, "trade root + named listings scrolling container (may be empty)")
+                end
+                if score >= TradeConfig.MinConfidence then
+                    local candidate = {instance = root, score = score, reasons = reasons}
+                    if not best or score > best.score then runner = best; best = candidate else runner = candidate end
+                end
+            end
+        end
+        if runner and best.score - runner.score < TradeConfig.AmbiguityMargin then return nil, "ambiguous trade roots" end
+        return best, best and nil or "Trade Hub not found"
+    end
+    function B.collectListingCandidates(root)
+        local cards, seen = {}, {}
+        for _, action in ipairs(walk(root, true)) do
+            if button(action) and exact(action, {"send offer", "open listing", "view listing", "open offer"}) then
+                local node = action.Parent
+                for _ = 1, TradeConfig.MaxAncestors do
+                    if not node or node == root then break end
+                    local wants, offers = roles(node, false)
+                    if wants and offers then
+                        if not seen[node] then seen[node] = true; table.insert(cards, node) end
+                        break
+                    end
+                    node = node.Parent
+                end
+            end
+            if #cards >= TradeConfig.MaxCards then break end
+        end
+        return cards
+    end
+    function B.findListingsContainer(root)
+        local cards = B.collectListingCandidates(root)
+        if #cards == 0 then return nil, cards end
+        local container = cards[1].Parent
+        while container and container ~= root do
+            local all = true
+            for _, card in ipairs(cards) do if not within(card, container) then all = false end end
+            if all then return container, cards end
+            container = container.Parent
+        end
+        return root, cards
+    end
+    function B.findOfferDialog(root)
+        local candidates = {}
+        for _, o in ipairs(walk(root, true)) do
+            if is(o, "Frame") or is(o, "ScrollingFrame") then
+                local give, receive = roles(o, true)
+                if give and receive and resolve(o, {"make offer", "send offer", "submit offer"}) then
+                    table.insert(candidates, {instance = o, score = 0.94, reasons = {"you give + they give + submit action"}, give = give, receive = receive})
+                end
+            end
+        end
+        local leaves = {}
+        for _, candidate in ipairs(candidates) do
+            local broad = false
+            for _, other in ipairs(candidates) do
+                if candidate ~= other and within(other.instance, candidate.instance) then broad = true end
+            end
+            if not broad then table.insert(leaves, candidate) end
+        end
+        return #leaves == 1 and leaves[1] or nil
+    end
+    function B.findAddItemButton(dialog)
+        return resolve(dialog.give, {"add", "add item", "add pet", "+", "plus"})
+    end
+    function B.findInventoryItems(playerGui, wanted)
+        local candidates = {}
+        for _, o in ipairs(walk(playerGui, true)) do
+            if (is(o, "Frame") or is(o, "ScrollingFrame") or is(o, "ScreenGui"))
+                and exact(o, {"inventory", "backpack", "inventory items", "item picker"}) then
+                table.insert(candidates, o)
+            end
+        end
+        local roots = {}
+        for _, o in ipairs(candidates) do
+            local nested = false
+            for _, other in ipairs(candidates) do if o ~= other and within(o, other) then nested = true end end
+            if not nested then table.insert(roots, o) end
+        end
+        if #roots ~= 1 then return nil, {}, "inventory missing/ambiguous" end
+        local items = {}
+        for _, entry in ipairs(B.parseItems(roots[1])) do
+            if entry.name and norm(entry.name) == norm(wanted) and not entry.unknown and entry.action then table.insert(items, entry) end
+        end
+        return roots[1], items
+    end
+    function B.findInventorySearch(root)
+        local candidates = {}
+        for _, o in ipairs(walk(root, true)) do
+            if is(o, "TextBox") and (norm(o.Name):find("search", 1, true) or norm(read(o, "PlaceholderText")):find("search", 1, true)) then
+                table.insert(candidates, {instance = o, score = 0.92, reasons = {"unique inventory search TextBox"}})
+            end
+        end
+        return #candidates == 1 and candidates[1] or nil
+    end
+    function B.detectResult(root)
+        local matches = {}
+        for _, o in ipairs(walk(root, true)) do
+            if is(o, "TextLabel") then
+                local value = norm(o.Text)
+                local kind
+                if value:find("offer", 1, true) and (value:find("offer sent", 1, true) or value:find("offer was sent", 1, true)
+                    or value:find("successfully sent", 1, true) or value:find("offer successfully submitted", 1, true)) then kind = "SUCCESS"
+                elseif value:find("no longer valid", 1, true) or value:find("offer expired", 1, true) or value:find("listing expired", 1, true) or value:find("invalid offer", 1, true) then kind = "INVALID"
+                elseif value:find("offer rejected", 1, true) or value:find("offer declined", 1, true) then kind = "REJECTED"
+                elseif value:find("offer failed", 1, true) or value:find("trade error", 1, true) then kind = "ERROR"
+                elseif value:find("automatically", 1, true) and value:find("accepted", 1, true)
+                    or value:find("are you sure", 1, true) or value:find("confirm this", 1, true) then kind = "CONFIRMATION"
+                elseif (norm(o.Parent.Name):find("popup", 1, true) or norm(o.Parent.Name):find("dialog", 1, true))
+                    and resolve(o.Parent, {"confirm", "yes", "okay", "ok"}) then kind = "UNKNOWN" end
+                if kind then table.insert(matches, {kind = kind, text = o.Text, root = o.Parent, score = 0.94}) end
+            end
+        end
+        if #matches == 1 then return matches[1] end
+        if #matches > 1 then return {kind = "UNKNOWN", text = "multiple result dialogs", score = 0} end
+        return nil
+    end
+    function B.dumpRelevantTradeGui()
+        local pg = Players.LocalPlayer:WaitForChild("PlayerGui")
+        local hub = B.findTradeHubGui(pg)
+        local nodes, truncated = walk(hub and hub.instance or pg, true)
+        local lines = {}
+        for _, o in ipairs(nodes) do
+            if is(o, "GuiObject") and #lines < TradeConfig.MaxDumpLines then
+                local p, size = o.AbsolutePosition, o.AbsoluteSize
+                table.insert(lines, string.format("%s class=%s visible=%s rect=%.0f,%.0f,%.0f,%.0f text=%q image=%q",
+                    path(o), read(o, "ClassName") or "GuiObject", tostring(o.Visible), p.X, p.Y, size.X, size.Y,
+                    tostring(read(o, "Text") or ""), tostring(read(o, "Image") or ""))
+                    .. " imageKey=" .. ((is(o, "ImageLabel") or is(o, "ImageButton")) and B.imageKey(o) or "")
+                    .. " item=" .. tostring(attr(o, "ItemName")) .. " quantity=" .. tostring(quantity(o))
+                    .. " listing=" .. tostring(attr(o, "ListingId")) .. " owner=" .. tostring(attr(o, "UserId")))
+            end
+        end
+        table.insert(lines, "truncated=" .. tostring(truncated or #lines >= TradeConfig.MaxDumpLines))
+        local value = table.concat(lines, "\n")
+        print("[BOT GUI DUMP]\n" .. value)
+        return value
+    end
+    local Controller = {}; Controller.__index = Controller
+    B.Controller = Controller
+    function Controller.new()
+        return setmetatable({currentState = "IDLE", running = false, processedListings = {}, connections = {},
+            pending = nil, resultBaseline = {}, scanSignature = nil, input = nil, lastError = nil}, Controller)
+    end
+    function Controller:log(category, message)
+        addLog(category, message); print("[" .. category .. "] " .. message)
+    end
+    function Controller:debug(message)
+        if TradeConfig.Debug then self:log("BOT", message) end
+    end
+    function Controller:setState(value)
+        self.currentState = value
+        setStatus(value, value == "FAILED" and C.red or C.green)
+        self:debug("State=" .. value)
+    end
+    function Controller:active()
+        return self.running and state.running and alive and self.generation == state.generation
+    end
+    function Controller:dryRun()
+        return TradeConfig.DryRun or self.rules.mode ~= "Auto"
+    end
+    function Controller:settingsValid()
+        return state.give.id == self.rules.give.id and state.want.id == self.rules.want.id
+            and state.giveQuantity == self.rules.giveQuantity and state.wantQuantity == self.rules.wantQuantity
+            and state.mode == self.rules.mode
+    end
+    function Controller:schedule(delay)
+        if not self:active() or self.pending then return end
+        self.pending = task.delay(delay, function()
+            self.pending = nil
+            if not self:active() then return end
+            local ok, reason = xpcall(function() self:tradeLoop() end, function(err) return tostring(err) end)
+            if not ok and self:active() then self:handleFailure("backend exception: " .. reason) end
+        end)
+    end
+    function Controller:click(target, purpose)
+        if not self:active() then return false, "STOP/cancellation" end
+        if not self:settingsValid() then return false, "settings changed; restart required" end
+        if purpose == "submit" and self:dryRun() then return false, "DRY RUN final submit blocked" end
+        if purpose == "confirm" then return false, "unknown confirmation never auto-clicked" end
+        if not target or target.score < TradeConfig.MinConfidence or not shown(target.instance)
+            or not (button(target.instance) or purpose == "focus search" and is(target.instance, "TextBox")) then
+            return false, "low confidence or target disappeared"
+        end
+        local o = target.instance
+        if exact(o, {"okay", "ok", "yes", "confirm", "confirm offer", "accept"}) and purpose ~= "recover" then
+            return false, "confirmation action never automated"
+        end
+        local finalAction = exact(o, {"make offer", "submit offer", "confirm", "confirm offer"})
+        local offerDialog = self.hub and B.findOfferDialog(self.hub.instance)
+        if exact(o, {"send offer"}) and offerDialog and within(o, offerDialog.instance) then finalAction = true end
+        if finalAction and (purpose ~= "submit" or self:dryRun()) then return false, "final action blocked by mode/context" end
+        if read(o, "Active") == false or read(o, "Interactable") == false then return false, "target not interactable" end
+        local point = o.AbsolutePosition + o.AbsoluteSize / 2
+        local viewportSize = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize
+        if not viewportSize or point.X < 0 or point.Y < 0 or point.X >= viewportSize.X or point.Y >= viewportSize.Y then
+            return false, "target outside viewport"
+        end
+        local parent = o.Parent
+        while parent do
+            if is(parent, "GuiObject") and parent.ClipsDescendants then
+                local p, sz = parent.AbsolutePosition, parent.AbsoluteSize
+                if point.X < p.X or point.Y < p.Y or point.X >= p.X + sz.X or point.Y >= p.Y + sz.Y then return false, "target clipped" end
+            end
+            parent = parent.Parent
+        end
+        if not self.input then
+            local ok, input = pcall(function() return UIS:CreateVirtualInput() end)
+            if not ok or not input then return false, "VirtualInput unavailable; no restricted-input bypass" end
+            self.input = input
+        end
+        -- The approved dashboard can overlap game UI. Temporarily disable the
+        -- overlay for this synchronous click and restore it even on failure;
+        -- never move or resize any controls.
+        local enabled = gui.Enabled
+        gui.Enabled = false
+        local okHit, hits = pcall(function() return self.playerGui:GetGuiObjectsAtPosition(point.X, point.Y) end)
+        if not okHit then gui.Enabled = enabled; return false, "GUI hit testing unavailable" end
+        local top = hits[1]
+        if not top or not (within(top, o) or within(o, top)) then gui.Enabled = enabled; return false, "target occluded or hit-test mismatch" end
+        if not self:active() then gui.Enabled = enabled; return false, "STOP/cancellation" end
+        local pressed = false
+        local ok, reason = pcall(function()
+            self.input:SendMouseButton(point, Enum.UserInputType.MouseButton1, true, 0)
+            pressed = true
+            self.input:SendMouseButton(point, Enum.UserInputType.MouseButton1, false, 0)
+            pressed = false
+        end)
+        if pressed then pcall(function() self.input:SendMouseButton(point, Enum.UserInputType.MouseButton1, false, 0) end) end
+        gui.Enabled = enabled
+        self:log("OFFER", string.format("VirtualInput %s %s confidence=%.2f client=(%.0f,%.0f) accepted=%s; awaiting UI evidence",
+            purpose, path(o), target.score, point.X, point.Y, tostring(ok)))
+        return ok, ok and nil or tostring(reason)
+    end
+    function Controller:remember(result)
+        local count, oldest, time = 0, nil, math.huge
+        for key, record in pairs(self.processedListings) do
+            if os.clock() - record.timestamp >= TradeConfig.ListingCooldown then self.processedListings[key] = nil
+            else
+                count += 1
+                if record.timestamp < time then oldest, time = key, record.timestamp end
+            end
+        end
+        if count >= TradeConfig.MaxProcessed and oldest then self.processedListings[oldest] = nil end
+        if self.listing then self.processedListings[self.listing.key] = {timestamp = os.clock(), result = result} end
+    end
+    function Controller:processed(key)
+        local record = self.processedListings[key]
+        if record and os.clock() - record.timestamp < TradeConfig.ListingCooldown then return true end
+        self.processedListings[key] = nil
+        return false
+    end
+    function Controller:scanTradeHub()
+        if not self.hub or not shown(self.hub.instance) or not within(self.hub.instance, self.playerGui) then
+            local reason; self.hub, reason = B.findTradeHubGui(self.playerGui)
+            if not self.hub then return nil, reason end
+            self:debug("Trade root=" .. path(self.hub.instance) .. " confidence=" .. self.hub.score)
+        end
+        local container, cards = B.findListingsContainer(self.hub.instance)
+        return {container = container, cards = cards}
+    end
+    function Controller:openListing(listing)
+        local fresh = B.parseListing(listing.root)
+        if fresh.key ~= listing.key or fresh.signature ~= listing.signature or not B.matchesRules(fresh, self.rules) then return false, "Listing changed" end
+        self.listing = fresh
+        return self:click(fresh.action, "open listing")
+    end
+    function Controller:finalValidation()
+        if not self:settingsValid() then return false, "settings changed" end
+        if not self.dialog or not shown(self.dialog.instance) then return false, "offer dialog disappeared" end
+        if B.detectResult(self.playerGui) then return false, "popup present / listing invalid" end
+        if not shown(self.listing.root) then
+            -- A modal may hide its listing. Require independently verified terms,
+            -- but never invent a validity marker from an absent source card.
+            return false, "listing validity cannot be verified while source card hidden"
+        end
+        local fresh = B.parseListing(self.listing.root)
+        if fresh.key ~= self.listing.key or fresh.signature ~= self.listing.signature or not B.matchesRules(fresh, self.rules) then return false, "Listing changed" end
+        local give, gc, errorGive = total(B.parseItems(self.dialog.give), self.rules.give.name)
+        local receive, rc, errorReceive = total(B.parseItems(self.dialog.receive), self.rules.want.name)
+        if give ~= self.rules.giveQuantity then return false, "our item/quantity invalid: " .. tostring(errorGive or give) end
+        if receive ~= self.rules.wantQuantity then return false, "received item/quantity invalid: " .. tostring(errorReceive or receive) end
+        local submit = resolve(self.dialog.instance, {"make offer", "send offer", "submit offer"})
+        if not submit then return false, "Submit button not found" end
+        return math.min(gc, rc, fresh.confidence, submit.score) >= TradeConfig.MinConfidence, submit
+    end
+    function Controller:buildOffer()
+        local selected, confidence, problem = total(B.parseItems(self.dialog.give), self.rules.give.name)
+        if not selected or selected > self.rules.giveQuantity then
+            local old = B.parseItems(self.dialog.give)
+            local clear = resolve(self.dialog.give, {"clear", "clear all", "clear items"})
+            if not clear and old[1] then clear = resolve(old[1].root, {"remove", "remove item", "delete", "x", "×"}) end
+            if not clear then return false, "previous selection cannot be cleared safely: " .. tostring(problem or selected) end
+            self.clearAttempts = (self.clearAttempts or 0) + 1
+            if self.clearAttempts > TradeConfig.MaxOfferQuantity then return false, "clear selection retry limit" end
+            self.clearBefore = #old
+            self.clearCount = 0
+            for _, item in ipairs(old) do self.clearCount += item.quantity or 0 end
+            local ok, why = self:click(clear, "clear previous selection")
+            return ok, ok and "clearing" or why
+        end
+        if selected == self.rules.giveQuantity then return true, "ready" end
+        local add = B.findAddItemButton(self.dialog)
+        if not add then return false, "Add item button missing/ambiguous" end
+        self.selectedBefore = selected
+        return self:click(add, "open inventory")
+    end
+    function Controller:selectOfferItem()
+        local inventory, items, reason = B.findInventoryItems(self.playerGui, self.rules.give.name)
+        if not inventory then return nil, reason end
+        local available = 0
+        for _, item in ipairs(items) do available += item.quantity end
+        local required = self.rules.giveQuantity - self.selectedBefore
+        if #items == 0 and not self.inventorySearched then
+            local search = B.findInventorySearch(inventory)
+            if search then
+                self.inventorySearch = search.instance; self.inventorySearched = true
+                local ok, why = self:click(search, "focus search")
+                return ok, ok and "focus search" or why
+            end
+        end
+        if #items == 0 and self.inventorySearched then return nil, "Item not found after inventory search" end
+        if available < required then return false, "Not enough selected items required=" .. required .. " found=" .. available end
+        table.sort(items, function(a, b) return a.confidence > b.confidence end)
+        local item = items[1]
+        if not item then return false, "Item not found" end
+        self:log("OFFER", "Found selected item: " .. item.name .. " available=" .. available)
+        return self:click({instance = item.action, score = item.confidence, reasons = {"exact inventory item + quantity"}}, "select item")
+    end
+    function Controller:submitOffer()
+        if self:dryRun() then return false, "DRY RUN final submit blocked" end
+        local valid, submit = self:finalValidation()
+        if not valid then return false, tostring(submit) end
+        self.resultBaseline = {}
+        local result = B.detectResult(self.playerGui)
+        if result then self.resultBaseline[result.root] = true end
+        local ok, why = self:click(submit, "submit")
+        if ok then self:remember("SUBMITTED_UNVERIFIED") end
+        return ok, why
+    end
+    function Controller:recover()
+        local popup = B.detectResult(self.playerGui)
+        if popup and (popup.kind == "CONFIRMATION" or popup.kind == "UNKNOWN") then return false, "confirmation/unknown popup requires user review" end
+        local root = popup and popup.root or self.dialog and self.dialog.instance
+        if not root then return true end
+        local close = resolve(root, popup and {"okay", "ok", "close", "cancel"} or {"cancel", "back", "close"})
+        if not close then return false, "safe close action missing/ambiguous" end
+        return self:click(close, "recover")
+    end
+    function Controller:handleFailure(reason, kind)
+        self.lastError = reason; self:log("ERROR", reason)
+        if kind == "INVALID" then incrementInvalid() else incrementErrors() end
+        self:remember(kind or "FAILED"); self:setState("FAILED")
+        if not self:active() then return end
+        local recovered, errorRecover = self:recover()
+        if not recovered then self:log("ERROR", "recovery blocked: " .. tostring(errorRecover)); setRunning(false); return end
+        self:setState("RECOVERING"); self.deadline = os.clock() + TradeConfig.DialogTimeout; self:schedule(TradeConfig.PollInterval)
+    end
+    function Controller:handleSuccess(result)
+        incrementSent(); incrementSuccess(); self:remember("SUCCESS"); self:setState("SUCCESS")
+        local ok, why = self:recover()
+        if not ok then self:handleFailure(why); return end
+        self:setState("RECOVERING"); self.deadline = os.clock() + TradeConfig.DialogTimeout
+        self:schedule(TradeConfig.PollInterval)
+    end
+    function Controller:handleRejected(result) self:handleFailure(result.text, "REJECTED") end
+    function Controller:handleInvalid(result) self:handleFailure(result.text, "INVALID") end
+    function Controller:handleTimeout(message) self:handleFailure(message) end
+    function Controller:cooldown(result)
+        if result ~= "PROCESSED" then self:remember(result) end
+        self:setState("COOLDOWN")
+        self:schedule(math.max(state.delay, TradeConfig.ActionDelay))
+    end
+    function Controller:tradeLoop()
+        if not self:active() then return end
+        if not self:settingsValid() then self:log("ERROR", "settings changed; stopping stale offer"); setRunning(false); return end
+        local phase = self.currentState
+        if phase == "SCANNING" then
+            local scan, reason = self:scanTradeHub()
+            if not scan then
+                local launcher = not self.launchAttempted and resolve(self.playerGui, {"trade hub"})
+                if launcher then
+                    self.launchAttempted = true
+                    local ok, why = self:click(launcher, "open Trade Hub")
+                    if not ok then self:handleFailure(why); return end
+                    self:setState("OPENING_HUB"); self.deadline = os.clock() + TradeConfig.DialogTimeout
+                    self:schedule(TradeConfig.PollInterval); return
+                end
+                if reason ~= self.lastScanError then self:log("ERROR", tostring(reason)); self.lastScanError = reason end
+                self:schedule(TradeConfig.ScanInterval); return
+            end
+            self.lastScanError = nil
+            if #scan.cards == 0 then
+                local search = resolve(self.hub.instance, {"search listings"})
+                if search and not self.navigationAttempted then
+                    self.navigationAttempted = true
+                    local ok, why = self:click(search, "open search listings")
+                    if not ok then self:handleFailure(why); return end
+                    self:setState("OPENING_SEARCH"); self.deadline = os.clock() + TradeConfig.DialogTimeout
+                    self:schedule(TradeConfig.PollInterval); return
+                end
+                if self.scanSignature ~= "empty" then self:log("SCAN", "No listings; waiting for visible search results"); self.scanSignature = "empty" end
+                self:schedule(TradeConfig.ScanInterval); return
+            end
+            local best, parsed, matched = nil, 0, 0
+            for _, card in ipairs(scan.cards) do
+                local listing = B.parseListing(card)
+                if not listing.unknown then parsed += 1 end
+                local score = B.scoreListing(listing, self.rules)
+                if score > 0 and not self:processed(listing.key) then
+                    matched += 1; listing.score = score
+                    if not best or score > best.score or score == best.score and listing.key < best.key then best = listing end
+                elseif TradeConfig.Debug then self:debug("SKIP " .. listing.key .. " " .. tostring(select(2, B.matchesRules(listing, self.rules)))) end
+                if TradeConfig.Debug then self:debug("PARSE " .. path(card) .. " confidence=" .. listing.confidence .. " unknown=" .. tostring(listing.unknown)) end
+            end
+            local signature = #scan.cards .. ":" .. parsed .. ":" .. matched
+            if self.scanSignature ~= signature then
+                self:log("SCAN", "Found " .. #scan.cards .. " listing candidates")
+                self:log("PARSE", "Parsed " .. parsed .. "/" .. #scan.cards .. "; matches=" .. matched)
+                self.scanSignature = signature
+            end
+            if not best then self:schedule(TradeConfig.ScanInterval); return end
+            self.listing = best; self:setState("MATCH_FOUND")
+            self:log("MATCH", "Best listing=" .. best.key .. " score=" .. best.score)
+            self:schedule(TradeConfig.ActionDelay)
+        elseif phase == "OPENING_HUB" then
+            self.hub = B.findTradeHubGui(self.playerGui)
+            if self.hub then self:setState("SCANNING"); self:schedule(TradeConfig.ActionDelay)
+            elseif os.clock() >= self.deadline then self:handleFailure("Trade Hub navigation timeout") else self:schedule(TradeConfig.PollInterval) end
+        elseif phase == "OPENING_SEARCH" then
+            local scan = self:scanTradeHub()
+            if scan and #scan.cards > 0 then self:setState("SCANNING"); self:schedule(TradeConfig.ActionDelay); return end
+            local you, them
+            if self.hub then you, them = roles(self.hub.instance, false) end
+            if you and them then
+                local want = total(B.parseItems(them), self.rules.want.name)
+                if want == self.rules.wantQuantity then
+                    local search = resolve(self.hub.instance, {"search"})
+                    local ok, why = self:click(search, "search selected criteria")
+                    if not ok then self:handleFailure(why); return end
+                    self:setState("WAITING_LISTINGS"); self.deadline = os.clock() + TradeConfig.DialogTimeout
+                    self:schedule(TradeConfig.PollInterval); return
+                end
+                self:handleFailure("Search panel opened, but selected wanted item is not verifiable. Supply relevant GUI dump; no guessed picker clicks."); return
+            end
+            if os.clock() >= self.deadline then self:handleFailure("Search Listings navigation timeout") else self:schedule(TradeConfig.PollInterval) end
+        elseif phase == "WAITING_LISTINGS" then
+            local scan = self:scanTradeHub()
+            if scan and #scan.cards > 0 then self:setState("SCANNING"); self:schedule(TradeConfig.ActionDelay)
+            elseif os.clock() >= self.deadline then self:handleFailure("No listings after verified search timeout") else self:schedule(TradeConfig.PollInterval) end
+        elseif phase == "MATCH_FOUND" then
+            self:setState("OPENING_LISTING")
+            local ok, why = self:openListing(self.listing)
+            if not ok then self:handleFailure(why); return end
+            self.deadline = os.clock() + TradeConfig.DialogTimeout; self:schedule(TradeConfig.PollInterval)
+        elseif phase == "OPENING_LISTING" then
+            self.dialog = B.findOfferDialog(self.hub.instance)
+            if self.dialog then
+                local receive = total(B.parseItems(self.dialog.receive), self.rules.want.name)
+                if receive ~= self.rules.wantQuantity then self:handleFailure("offer dialog received item mismatch"); return end
+                self:setState("BUILDING_OFFER"); self:schedule(TradeConfig.ActionDelay)
+            elseif os.clock() >= self.deadline then self:handleFailure("Offer dialog timeout") else self:schedule(TradeConfig.PollInterval) end
+        elseif phase == "BUILDING_OFFER" then
+            local ok, why = self:buildOffer()
+            if not ok then self:handleFailure(why); return end
+            if why == "ready" then self:setState("READY") elseif why == "clearing" then self:setState("VERIFYING_CLEAR") else self:setState("WAITING_INVENTORY") end
+            self.deadline = os.clock() + TradeConfig.InventoryTimeout; self:schedule(TradeConfig.PollInterval)
+        elseif phase == "VERIFYING_CLEAR" then
+            local items, count = B.parseItems(self.dialog.give), 0
+            for _, item in ipairs(items) do count += item.quantity or 0 end
+            if #items < self.clearBefore or count < self.clearCount then self:setState("BUILDING_OFFER"); self:schedule(TradeConfig.ActionDelay)
+            elseif os.clock() >= self.deadline then self:handleFailure("clear selection UI verification timeout") else self:schedule(TradeConfig.PollInterval) end
+        elseif phase == "WAITING_INVENTORY" then
+            local ok, why = self:selectOfferItem()
+            if ok then self:setState(why == "focus search" and "FOCUSING_INVENTORY_SEARCH" or "VERIFYING_ITEM"); self.deadline = os.clock() + TradeConfig.InventoryTimeout
+            elseif ok == false or os.clock() >= self.deadline then self:handleFailure(why or "Inventory timeout"); return end
+            self:schedule(TradeConfig.PollInterval)
+        elseif phase == "FOCUSING_INVENTORY_SEARCH" then
+            local ok, focused = pcall(function() return UIS:GetFocusedTextBox() end)
+            if ok and focused == self.inventorySearch then
+                if not self:active() or not shown(focused) then return end
+                local typed, why = pcall(function()
+                    focused.SelectionStart = 1; focused.CursorPosition = #focused.Text + 1
+                    self.input:SendTextInput(self.rules.give.name)
+                end)
+                if not typed then self:handleFailure("inventory text input unavailable: " .. tostring(why)); return end
+                self:setState("VERIFYING_INVENTORY_SEARCH"); self:schedule(TradeConfig.PollInterval)
+            elseif os.clock() >= self.deadline then self:handleFailure("inventory search focus not verified") else self:schedule(TradeConfig.PollInterval) end
+        elseif phase == "VERIFYING_INVENTORY_SEARCH" then
+            if norm(self.inventorySearch.Text) == norm(self.rules.give.name) then
+                self:setState("WAITING_INVENTORY"); self:schedule(TradeConfig.PollInterval)
+            elseif os.clock() >= self.deadline then self:handleFailure("inventory search text not verified") else self:schedule(TradeConfig.PollInterval) end
+        elseif phase == "VERIFYING_ITEM" then
+            local selected = total(B.parseItems(self.dialog.give), self.rules.give.name)
+            if selected and selected == self.selectedBefore + 1 then
+                self:log("OFFER", "Added " .. selected .. "/" .. self.rules.giveQuantity)
+                self:setState("BUILDING_OFFER"); self:schedule(TradeConfig.ActionDelay)
+            elseif selected and selected > self.selectedBefore + 1 then self:handleFailure("unexpected item quantity change")
+            elseif os.clock() >= self.deadline then self:handleFailure("item selection UI verification timeout") else self:schedule(TradeConfig.PollInterval) end
+        elseif phase == "READY" then
+            local valid, why = self:finalValidation()
+            if not valid then self:handleFailure("final validation: " .. tostring(why)); return end
+            if self:dryRun() then
+                self:log("DRY RUN", "Would submit Give: " .. self.rules.giveQuantity .. "x " .. self.rules.give.name
+                    .. "; Receive: " .. self.rules.wantQuantity .. "x " .. self.rules.want.name
+                    .. "; Listing: " .. self.listing.key .. "; Confidence: " .. self.listing.confidence .. "; final submit BLOCKED")
+                if self.rules.mode == "Manual" then
+                    self:remember("MANUAL_READY"); setRunning(false)
+                    self.currentState = "READY"; setStatus("READY · Manual", C.pale); return
+                end
+                local ok, errorRecover = self:recover()
+                if not ok then self:handleFailure(errorRecover); return end
+                self:remember("DRY_RUN"); self:setState("RECOVERING"); self.deadline = os.clock() + TradeConfig.DialogTimeout
+                self:schedule(TradeConfig.PollInterval)
+            else self:setState("SUBMITTING"); self:schedule(TradeConfig.ActionDelay) end
+        elseif phase == "SUBMITTING" then
+            local ok, why = self:submitOffer()
+            if not ok then self:handleFailure(why); return end
+            self:setState("WAITING_RESULT"); self.deadline = os.clock() + TradeConfig.ResultTimeout; self:schedule(TradeConfig.PollInterval)
+        elseif phase == "WAITING_RESULT" then
+            local result = B.detectResult(self.playerGui)
+            if result and not self.resultBaseline[result.root] then
+                self:log("RESULT", result.kind .. ": " .. result.text)
+                if result.kind == "SUCCESS" then
+                    self:handleSuccess(result)
+                elseif result.kind == "INVALID" then self:handleInvalid(result)
+                elseif result.kind == "REJECTED" then self:handleRejected(result)
+                elseif result.kind == "CONFIRMATION" or result.kind == "UNKNOWN" then self:handleFailure("confirmation/unknown popup requires review")
+                else self:handleFailure(result.text, result.kind) end
+            elseif os.clock() >= self.deadline then self:handleTimeout("Result timeout; submitted listing remains cached") else self:schedule(TradeConfig.PollInterval) end
+        elseif phase == "RECOVERING" then
+            if not B.findOfferDialog(self.hub and self.hub.instance or self.playerGui) and not B.detectResult(self.playerGui) then self:cooldown("PROCESSED")
+            elseif os.clock() >= self.deadline then self:log("ERROR", "Recovery UI verification timeout"); setRunning(false) else self:schedule(TradeConfig.PollInterval) end
+        elseif phase == "COOLDOWN" then
+            if not state.repeatTrades then setRunning(false); return end
+            self.listing = nil; self.dialog = nil; self:setState("SCANNING"); self:schedule(TradeConfig.ActionDelay)
+        else self:handleFailure("Unknown UI/controller state: " .. tostring(phase)) end
+    end
+    function Controller:startTradeBot()
+        if self.running then return false end
+        self.playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
+        self.rules = {give = state.give, want = state.want, giveQuantity = state.giveQuantity,
+            wantQuantity = state.wantQuantity, mode = state.mode}
+        if self.rules.giveQuantity > TradeConfig.MaxOfferQuantity or self.rules.wantQuantity > TradeConfig.MaxOfferQuantity then
+            self:log("ERROR", "quantity exceeds safe UI batch limit"); return false
+        end
+        self.running = true; self.generation = state.generation
+        self.navigationAttempted = false; self.launchAttempted = false; self.lastScanError = nil; self.scanSignature = nil; self.inventorySearched = false
+        self.clearAttempts = 0; self.listing = nil; self.dialog = nil; self.hub = nil
+        self:log("BOT", "Started; DryRun=" .. tostring(self:dryRun()) .. "; GUI resolver + verified input")
+        self:setState("SCANNING"); self:schedule(0); return true
+    end
+    function Controller:stopTradeBot()
+        self.running = false
+        if self.pending then task.cancel(self.pending); self.pending = nil end
+        disconnect(self.connections)
+        self.currentState = "STOPPED"
+    end
+    function Controller:cleanupTradeBot()
+        self:stopTradeBot()
+        if self.input then pcall(function() self.input:Destroy() end); self.input = nil end
+    end
+    function B.startTradeBot()
+        if not B.controller then B.controller = Controller.new() end
+        return B.controller:startTradeBot()
+    end
+    function B.stopTradeBot()
+        if B.controller then B.controller:stopTradeBot() end
+    end
+    function B.cleanupTradeBot()
+        if B.controller then B.controller:cleanupTradeBot() end
+    end
+    -- Public diagnostic surface; no input or mode switching through globals.
+    local api = {dumpRelevantTradeGui = B.dumpRelevantTradeGui, config = TradeConfig,
+        getState = function() return B.controller and B.controller.currentState or "IDLE" end}
+    local apiEnv = _G
+    if type(getgenv) == "function" then
+        local ok, env = pcall(getgenv)
+        if ok and type(env) == "table" then apiEnv = env end
+    end
+    local published = pcall(function() apiEnv.TakizawaTradeBot = api end)
+    if not published then print("[BOT] Diagnostic export unavailable; enable TradeConfig.Debug for selector logs") end
+end
+-- END TRADE BACKEND
+
 createMainWindow(); createHeader()
 createHomePage(); createAutoTradePage(); createItemsPage(); createSettingsPage(); createStatsPage(); createInfoPage()
 updateTrade(false); updateSettings(); switchPage("home")
