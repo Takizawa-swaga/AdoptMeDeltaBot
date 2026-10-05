@@ -54,6 +54,7 @@ local C = {
     green = Color3.fromRGB(73, 221, 117), red = Color3.fromRGB(255, 101, 129),
 }
 -- Live submit requires BOTH DryRun=false and the existing mode selector set to Auto.
+local LIVE_TEST = true -- START opens one real listing, verifies its window, then stops.
 local TradeConfig = {
     DryRun = true, Debug = false, MinConfidence = 0.80, AmbiguityMargin = 0.06,
     ScanInterval = 1.5, ActionDelay = 0.12, PollInterval = 0.15,
@@ -226,7 +227,8 @@ local setRunning
 setRunning = function(running)
     if running and state.running then return end
     closeDropdown()
-    if running and (not state.give or not state.want or state.giveQuantity < 1 or state.wantQuantity < 1) then
+    if running and LIVE_TEST then print("[LIVE] START pressed"); addLog("LIVE", "START pressed"); setStatus("SEARCHING TRADE HUB", C.green) end
+    if running and not LIVE_TEST and (not state.give or not state.want or state.giveQuantity < 1 or state.wantQuantity < 1) then
         incrementErrors(); setStatus("Ошибка", C.red); addLog("Error", "Некорректное предложение"); return
     end
     state.running = running
@@ -1405,8 +1407,11 @@ do
         self.pending = task.delay(delay, function()
             self.pending = nil
             if not self:active() then return end
-            local ok, reason = xpcall(function() self:tradeLoop() end, function(err) return tostring(err) end)
-            if not ok and self:active() then self:handleFailure("backend exception: " .. reason) end
+            local ok, reason = xpcall(function() if self.liveTest then self:liveTradeLoop() else self:tradeLoop() end end, function(err) return tostring(err) end)
+            if not ok and self:active() then
+                if self.liveTest then self:liveFinish("ERROR: CLICK FAILED", "Live test exception: " .. reason)
+                else self:handleFailure("backend exception: " .. reason) end
+            end
         end)
     end
     function Controller:click(target, purpose)
@@ -1772,22 +1777,302 @@ do
             self.listing = nil; self.dialog = nil; self:setState("SCANNING"); self:schedule(TradeConfig.ActionDelay)
         else self:handleFailure("Unknown UI/controller state: " .. tostring(phase)) end
     end
+    -- Minimal live probe: discover, open ONE listing, verify, then stop.
+    -- Uses existing input checks; never enters inventory/build/submit states.
+    local function liveLog(message)
+        print("[LIVE] " .. message); addLog("LIVE", message)
+    end
+    local function large(o)
+        return shown(o) and (is(o, "Frame") or is(o, "ScrollingFrame"))
+            and o.AbsoluteSize.X >= 180 and o.AbsoluteSize.Y >= 90
+    end
+    local function visibleTexts(root, limit)
+        local texts = {}
+        for _, o in ipairs(walk(root, true)) do
+            if shown(o) and (is(o, "TextLabel") or is(o, "TextButton")) and norm(o.Text) ~= "" then
+                table.insert(texts, {instance = o, text = o.Text})
+                if #texts >= limit then break end
+            end
+        end
+        return texts
+    end
+    local function liveTextDump(root)
+        for _, entry in ipairs(visibleTexts(root, 150)) do
+            local message = string.format("%s = %q", path(entry.instance), entry.text)
+            print("[TEXT] " .. message); addLog("TEXT", message)
+        end
+    end
+    local function liveAction(card)
+        local candidates = {}
+        for _, o in ipairs(walk(card, true)) do
+            if shown(o) and button(o) and read(o, "Active") ~= false and read(o, "Interactable") ~= false then
+                local excluded = exact(o, {"make offer", "submit offer", "confirm", "okay", "ok", "yes", "accept", "cancel", "close", "add", "+", "remove"})
+                if not excluded then
+                    local opening = exact(o, {"send offer", "open listing", "view listing", "open", "view", "offer"})
+                    -- Unnamed icon buttons are usable only with verified repeated-card context.
+                    table.insert(candidates, {instance = o, score = opening and 0.96 or 0.84,
+                        reasons = {opening and "visible listing action" or "button in repeated listing row"}})
+                end
+            end
+        end
+        table.sort(candidates, function(a, b)
+            if a.score ~= b.score then return a.score > b.score end
+            if a.instance.AbsolutePosition.Y ~= b.instance.AbsolutePosition.Y then
+                return a.instance.AbsolutePosition.Y < b.instance.AbsolutePosition.Y
+            end
+            return a.instance.AbsolutePosition.X < b.instance.AbsolutePosition.X
+        end)
+        if #candidates > 1 and candidates[1].score == candidates[2].score then
+            return nil -- do not guess between several unlabeled item/action icons
+        end
+        return candidates[1]
+    end
+    local function liveContainers(root)
+        local best, bestCards, bestScore
+        for _, container in ipairs(walk(root, true)) do
+            if large(container) then
+                local scroll = is(container, "ScrollingFrame")
+                local arranged = false
+                for _, child in ipairs(container:GetChildren()) do
+                    if is(child, "UIListLayout") or is(child, "UIGridLayout") then arranged = true end
+                end
+                local rows = {}
+                for _, child in ipairs(container:GetChildren()) do
+                    local name = norm(child.Name)
+                    if shown(child) and (is(child, "Frame") or button(child))
+                        and child.AbsoluteSize.X >= 100 and child.AbsoluteSize.Y >= 45
+                        and child.AbsoluteSize.X >= container.AbsoluteSize.X * 0.45
+                        and not name:find("template", 1, true) and not name:find("header", 1, true) then
+                        local texts, visual = visibleTexts(child, 30), false
+                        for _, node in ipairs(walk(child, true)) do
+                            if shown(node) and (button(node) or is(node, "ImageLabel")) then visual = true; break end
+                        end
+                        if visual and #texts > 0 then table.insert(rows, child) end
+                    end
+                end
+                local cards = {}
+                for _, row in ipairs(rows) do
+                    local similar = 0
+                    for _, other in ipairs(rows) do
+                        if row.ClassName == other.ClassName
+                            and math.abs(row.AbsoluteSize.X - other.AbsoluteSize.X) <= row.AbsoluteSize.X * 0.20
+                            and math.abs(row.AbsoluteSize.Y - other.AbsoluteSize.Y) <= row.AbsoluteSize.Y * 0.25 then
+                            similar += 1
+                        end
+                    end
+                    local action = liveAction(row)
+                    if (scroll or arranged or similar >= 2) and action
+                        and (action.score >= 0.96 or similar >= 2) then
+                        table.insert(cards, {root = row, action = action})
+                    end
+                end
+                local score = #cards + (scroll and 5 or arranged and 2 or 0)
+                if #cards > 0 and (not bestScore or score > bestScore) then
+                    best, bestCards, bestScore = container, cards, score
+                end
+            end
+        end
+        if bestCards then
+            table.sort(bestCards, function(a, b)
+                local ap, bp = a.root.AbsolutePosition, b.root.AbsolutePosition
+                return ap.Y == bp.Y and ap.X < bp.X or ap.Y < bp.Y
+            end)
+        end
+        return best, bestCards or {}
+    end
+    local function liveHub(playerGui)
+        local fallback
+        local keywords = {"search listings", "listings", "send offer", "make offer", "looking for", "trading", "offer"}
+        local entries = visibleTexts(playerGui, TradeConfig.MaxNodes)
+        table.sort(entries, function(a, b)
+            local aa = norm(a.text):find("search listings", 1, true) ~= nil
+            local bb = norm(b.text):find("search listings", 1, true) ~= nil
+            if aa ~= bb then return aa end
+            return path(a.instance) < path(b.instance)
+        end)
+        for _, entry in ipairs(entries) do
+            local text, relevant = norm(entry.text), false
+            for _, keyword in ipairs(keywords) do if text:find(keyword, 1, true) then relevant = true; break end end
+            if relevant then
+                if text:find("search listings", 1, true) then
+                    liveLog("Search Listings text found: " .. path(entry.instance))
+                end
+                local parent = entry.instance.Parent
+                for _ = 1, TradeConfig.MaxAncestors do
+                    if not parent or parent == playerGui then break end
+                    if large(parent) then
+                        fallback = fallback or parent
+                        local container, cards = liveContainers(parent)
+                        if container then liveLog("Candidate root: " .. path(parent)); return parent, container, cards end
+                    end
+                    parent = parent.Parent
+                end
+            end
+        end
+        if fallback then liveLog("Candidate root: " .. path(fallback)) end
+        return fallback, nil, {}
+    end
+    local function liveSnapshot(root)
+        local visible = {}
+        for _, o in ipairs(walk(root, true)) do if shown(o) then visible[o] = true end end
+        return visible
+    end
+    local function liveHit(target, playerGui)
+        local o = target.instance
+        if not shown(o) then return false end
+        local point = o.AbsolutePosition + o.AbsoluteSize / 2
+        local view = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize
+        if not view or point.X < 0 or point.Y < 0 or point.X >= view.X or point.Y >= view.Y then return false end
+        local parent = o.Parent
+        while parent do
+            if is(parent, "GuiObject") and parent.ClipsDescendants then
+                local p, s = parent.AbsolutePosition, parent.AbsoluteSize
+                if point.X < p.X or point.Y < p.Y or point.X >= p.X+s.X or point.Y >= p.Y+s.Y then return false end
+            end
+            parent = parent.Parent
+        end
+        local enabled = gui.Enabled; gui.Enabled = false
+        local ok, hits = pcall(function() return playerGui:GetGuiObjectsAtPosition(point.X, point.Y) end)
+        gui.Enabled = enabled
+        local top = ok and hits[1]
+        return top and (within(top, o) or within(o, top)) or false
+    end
+    local function liveOpened(root, before, container, hub)
+        local hubScreen = hub
+        while hubScreen and not is(hubScreen, "ScreenGui") do hubScreen = hubScreen.Parent end
+        for _, o in ipairs(walk(root, true)) do
+            if large(o) and not within(o, container) then
+                local keywords, strong, changed = false, false, not before[o]
+                for _, entry in ipairs(visibleTexts(o, 60)) do
+                    local text = norm(entry.text)
+                    for _, keyword in ipairs({"make offer", "send offer", "add item", "confirm", "cancel", "you give", "they give", "offer"}) do
+                        if text:find(keyword, 1, true) then
+                            keywords = true
+                            if not before[entry.instance] then changed = true end
+                        end
+                    end
+                    if text:find("make offer", 1, true) or text:find("add item", 1, true)
+                        or text:find("you give", 1, true) or text:find("they give", 1, true)
+                        or text == "confirm" or text == "cancel" then strong = true end
+                end
+                -- Existing listings contain "Send Offer": only NEW visible UI counts.
+                -- New rows/timers and unrelated chat/HUD are not evidence of opening.
+                local inHub = hubScreen and within(o, hubScreen)
+                if changed and (not before[o] and (inHub or keywords and strong)
+                    or before[o] and strong and inHub) then return o end
+            end
+        end
+    end
+    function Controller:liveFinish(status, errorMessage)
+        if errorMessage then print("[LIVE ERROR] " .. errorMessage); addLog("LIVE ERROR", errorMessage) end
+        setRunning(false)
+        self.currentState = status
+        setStatus(status, errorMessage and C.red or C.green)
+    end
+    function Controller:liveClickDump()
+        for _, o in ipairs({self.liveCard and self.liveCard.root, self.liveCard and self.liveCard.action.instance}) do
+            liveLog(string.format("Target: %s ClassName=%s AbsolutePosition=%s AbsoluteSize=%s Visible=%s Active=%s Selectable=%s Text=%q",
+                path(o), tostring(o.ClassName), tostring(o.AbsolutePosition), tostring(o.AbsoluteSize),
+                tostring(o.Visible), tostring(read(o, "Active")), tostring(read(o, "Selectable")), tostring(read(o, "Text") or "")))
+        end
+        local count = 0
+        local function children(o, depth)
+            if depth > 4 or count >= 150 then return end
+            for _, child in ipairs(o:GetChildren()) do
+                if count >= 150 then break end
+                count += 1
+                liveLog(string.format("Card child depth=%d %s ClassName=%s Visible=%s Text=%q", depth,
+                    path(child), tostring(child.ClassName), tostring(read(child, "Visible")), tostring(read(child, "Text") or "")))
+                children(child, depth + 1)
+            end
+        end
+        if self.liveCard then children(self.liveCard.root, 1) end
+    end
+    function Controller:liveTradeLoop()
+        if not self:active() then return end
+        if self.currentState == "SEARCHING TRADE HUB" then
+            local root, container, cards = liveHub(self.playerGui)
+            if not root then
+                liveTextDump(self.playerGui)
+                self:liveFinish("ERROR: TRADE HUB NOT FOUND", "Trade Hub not found; visible text dump follows START")
+                return
+            end
+            self.hub = {instance = root, score = 0.90}
+            self:setState("TRADE HUB FOUND"); liveLog("TRADE HUB FOUND")
+            if not container or #cards == 0 then
+                liveTextDump(self.playerGui)
+                self:liveFinish("ERROR: NO LISTINGS", "No clickable repeated listing rows; open search results before START")
+                return
+            end
+            liveLog("Listings container: " .. path(container))
+            liveLog("Candidate cards: " .. #cards)
+            self.liveCards = cards
+            self.liveContainer = container
+            self:setState("FOUND " .. #cards .. " LISTINGS")
+            self:schedule(0)
+        elseif self.currentState:match("^FOUND %d+ LISTINGS$") then
+            if B.findOfferDialog(self.playerGui) then
+                self:liveFinish("ERROR: CLICK FAILED", "Offer dialog already open; close it before this test")
+                return
+            end
+            -- Select the first row with an opening action; never inventory/final controls.
+            for _, card in ipairs(self.liveCards) do
+                if liveHit(card.action, self.playerGui) then self.liveCard = card; break end
+            end
+            if not self.liveCard then
+                self.liveCard = self.liveCards[1]; self:liveClickDump()
+                self:liveFinish("ERROR: CLICK FAILED", "Listing click failed: all candidate actions are clipped, outside viewport or occluded")
+                return
+            end
+            liveLog("Selected listing: " .. path(self.liveCard.root))
+            liveLog("Texts:")
+            for _, entry in ipairs(visibleTexts(self.liveCard.root, 30)) do liveLog(entry.text) end
+            self.liveBefore = liveSnapshot(self.playerGui)
+            liveLog("Input method: UserInputService:CreateVirtualInput / SendMouseButton")
+            local ok, reason = self:click(self.liveCard.action, "open live listing")
+            if not ok then
+                self:liveClickDump()
+                self:liveFinish("ERROR: CLICK FAILED", "Listing click failed: " .. tostring(reason))
+                return
+            end
+            self:setState("OPENING LISTING")
+            self.deadline = os.clock() + 5
+            self:schedule(0)
+        elseif self.currentState == "OPENING LISTING" then
+            local opened = liveOpened(self.playerGui, self.liveBefore, self.liveContainer, self.hub.instance)
+            if opened then
+                liveLog("Opened GUI: " .. path(opened))
+                liveLog("OFFER WINDOW OPENED")
+                self:liveFinish("LISTING OPENED")
+            elseif os.clock() >= self.deadline then
+                self:liveClickDump(); liveTextDump(self.playerGui)
+                self:liveFinish("ERROR: CLICK FAILED", "Listing click failed: no new visible offer/listing window within 5s")
+            else self:schedule(TradeConfig.PollInterval) end
+        else self:liveFinish("ERROR: CLICK FAILED", "Unexpected live-test state: " .. tostring(self.currentState)) end
+    end
+
     function Controller:startTradeBot()
         if self.running then return false end
-        self.playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
+        self.playerGui = Players.LocalPlayer:FindFirstChild("PlayerGui")
+        if not self.playerGui then
+            print("[LIVE ERROR] PlayerGui unavailable"); setStatus("ERROR: TRADE HUB NOT FOUND", C.red); return false
+        end
         self.rules = {give = state.give, want = state.want, giveQuantity = state.giveQuantity,
             wantQuantity = state.wantQuantity, mode = state.mode}
-        if self.rules.giveQuantity > TradeConfig.MaxOfferQuantity or self.rules.wantQuantity > TradeConfig.MaxOfferQuantity then
+        if not LIVE_TEST and (self.rules.giveQuantity > TradeConfig.MaxOfferQuantity or self.rules.wantQuantity > TradeConfig.MaxOfferQuantity) then
             self:log("ERROR", "quantity exceeds safe UI batch limit"); return false
         end
         self.running = true; self.generation = state.generation
         self.navigationAttempted = false; self.launchAttempted = false; self.lastScanError = nil; self.scanSignature = nil; self.inventorySearched = false
         self.clearAttempts = 0; self.listing = nil; self.dialog = nil; self.hub = nil
         self:log("BOT", "Started; DryRun=" .. tostring(self:dryRun()) .. "; GUI resolver + verified input")
-        self:setState("SCANNING"); self:schedule(0); return true
+        self.liveTest = LIVE_TEST
+        self.liveCard = nil; self.liveCards = nil; self.liveBefore = nil
+        self:setState(LIVE_TEST and "SEARCHING TRADE HUB" or "SCANNING"); self:schedule(0); return true
     end
     function Controller:stopTradeBot()
         self.running = false
+        self.liveBefore = nil; self.liveCards = nil; self.liveContainer = nil; self.liveCard = nil
         if self.pending then task.cancel(self.pending); self.pending = nil end
         disconnect(self.connections)
         self.currentState = "STOPPED"
